@@ -16,9 +16,9 @@ PROMPT_DIR = Path("cs336_alignment/prompts")
 PROMPT1 = (PROMPT_DIR / "question_only.prompt").read_text(encoding="utf-8")
 PROMPT2 = (PROMPT_DIR / "r1_zero_three_shot_gsm8k.prompt").read_text(encoding="utf-8")
 PROMPT3 = (PROMPT_DIR / "r1_zero.prompt").read_text(encoding="utf-8")
-VLLM_BASE_URL = ""
+VLLM_BASE_URL = "http://127.0.0.1:8000"
 MODEL_ID = "allenai/OLMo-2-0425-1B"
-BATCH_SIZE = ""
+BATCH_SIZE = 8
 SAMPLING_PARAMS = {
     "temperature": 1.0,
     "max_tokens": 512,
