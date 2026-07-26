@@ -10,6 +10,7 @@ from cs336_alignment.drgrpo_grader import (
 )
 import re
 from collections import Counter
+from tqdm.auto import tqdm
 
 DATASET_PATH = Path("data/gsm8k/test.jsonl")
 PROMPT_DIR = Path("cs336_alignment/prompts")
@@ -43,6 +44,7 @@ def build_prompts(prompt_template: str, ground_truth: dict):
 
 def main():
     ground_truth = load_ground_truth(DATASET_PATH)
+    print(f"Loaded {len(ground_truth)} GSM8K examples", flush=True)
     prompt_templates = [PROMPT1, PROMPT2, PROMPT3]
     for prompt_template in prompt_templates:
         if prompt_template == PROMPT1:
@@ -68,22 +70,36 @@ def main():
             prompt_name = "r1_zero"
 
         prompts: list[str] = build_prompts(prompt_template, ground_truth=ground_truth)        
-        completions = generate_completions(
-            vllm_base_url=VLLM_BASE_URL,
-            model_id=MODEL_ID,
-            prompts=prompts,
-            sampling_params=sampling_params,
-            batch_size=BATCH_SIZE,
-        )
+        completions = []
+        for start in tqdm(
+            range(0, len(prompts), BATCH_SIZE),
+            desc=f"Generating {prompt_name}",
+            unit="batch",
+        ):
+            prompt_batch = prompts[start : start + BATCH_SIZE]
+            batch_completions = generate_completions(
+                vllm_base_url=VLLM_BASE_URL,
+                model_id=MODEL_ID,
+                prompts=prompt_batch,
+                sampling_params=sampling_params,
+                batch_size=None,
+            )
+            completions.extend(batch_completions)
+
         assert len(completions) == len(prompts), f"生成数量不匹配: prompts={len(prompts)}, completions={len(completions)}"
 
         records = []
         counts = Counter()
-        for question, prompt, completion, answer in zip(
-            ground_truth.keys(),
-            prompts,
-            completions, 
-            ground_truth.values()
+        for question, prompt, completion, answer in tqdm(
+            zip(
+                ground_truth.keys(),
+                prompts,
+                completions,
+                ground_truth.values(),
+            ),
+            total=len(completions),
+            desc=f"Grading {prompt_name}",
+            unit="example",
         ):
             prediction = completion.text
             result_dict = reward_fn(prediction, answer)
@@ -117,6 +133,8 @@ def main():
             json.dump(summary, f, ensure_ascii=False, indent=2)
             for record in records:
                 f1.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        tqdm.write(f"{prompt_name}: {summary}")
                 
             
 
