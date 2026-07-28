@@ -100,15 +100,15 @@ $$
 Z_i=r(A_i)\nabla_\theta\log\pi_\theta(A_i).
 $$
 
-由于 \(p=\sigma(\theta)\)，因此
+由于 $p=\sigma(\theta)$，因此
 
 $$
 \frac{\partial p}{\partial \theta} = p(1-p).
 $$
 
-下面分别讨论 \(A_i=1\) 和 \(A_i=0\)。
+下面分别讨论 $A_i=1$ 和 $A_i=0$。
 
-当 \(A_i=1\) 时，该动作出现的概率为 \(p\)，奖励为 \(r(1)=1\)，且
+当 $A_i=1$ 时，该动作出现的概率为 $p$，奖励为 $r(1)=1$，且
 
 $$
 \begin{aligned}
@@ -125,7 +125,7 @@ $$
 Z_i=1-p,\qquad \text{with probability }p.
 $$
 
-当 \(A_i=0\) 时，该动作出现的概率为 \(1-p\)，奖励为 \(r(0)=0\)，且
+当 $A_i=0$ 时，该动作出现的概率为 $1-p$，奖励为 $r(0)=0$，且
 
 $$
 \begin{aligned}
@@ -142,7 +142,7 @@ $$
 Z_i=0\cdot(-p)=0,\qquad \text{with probability }1-p.
 $$
 
-综上，\(Z_i\) 的分布为
+综上，$Z_i$ 的分布为
 
 $$
 Z_i=
@@ -183,13 +183,13 @@ $$
 \end{aligned}
 $$
 
-题目中的 estimator 是 \(n\) 个独立同分布样本的均值：
+题目中的 estimator 是 $n$ 个独立同分布样本的均值：
 
 $$
 \hat g = \frac{1}{n} \sum_{i=1}^n Z_i.
 $$
 
-由于各个 \(Z_i\) 相互独立，
+由于各个 $Z_i$ 相互独立，
 
 $$
 \begin{aligned}
@@ -205,15 +205,15 @@ $$
 \boxed{\mathrm{Var}(\hat g)=\frac{p(1-p)^3}{n}}.
 $$
 
-### （b）使用常数 baseline \(b\) 时的方差
+### （b）使用常数 baseline $b$ 时的方差
 
-加入 baseline \(b\) 后，令单个样本对应的 policy gradient 项为
+加入 baseline $b$ 后，令单个样本对应的 policy gradient 项为
 
 $$
 Z_i=(r(A_i)-b)\nabla_\theta\log\pi_\theta(A_i).
 $$
 
-当 \(A_i=1\) 时，该动作出现的概率为 \(p\)，并且
+当 $A_i=1$ 时，该动作出现的概率为 $p$，并且
 
 $$
 r(1)=1,\qquad \nabla_\theta\log\pi_\theta(A_i=1)=1-p.
@@ -225,7 +225,7 @@ $$
 Z_i=(1-b)(1-p),\qquad \text{with probability }p.
 $$
 
-当 \(A_i=0\) 时，该动作出现的概率为 \(1-p\)，并且
+当 $A_i=0$ 时，该动作出现的概率为 $1-p$，并且
 
 $$
 r(0)=0,\qquad \nabla_\theta\log\pi_\theta(A_i=0)=-p.
@@ -237,7 +237,7 @@ $$
 Z_i=(0-b)(-p)=bp,\qquad \text{with probability }1-p.
 $$
 
-所以 \(Z_i\) 的分布为
+所以 $Z_i$ 的分布为
 
 $$
 Z_i=
@@ -277,7 +277,7 @@ $$
 \end{aligned}
 $$
 
-题目中的 estimator 是 \(n\) 个独立同分布样本的平均：
+题目中的 estimator 是 $n$ 个独立同分布样本的平均：
 
 $$
 \hat g_b = \frac{1}{n} \sum_{i=1}^n Z_i.
@@ -300,7 +300,7 @@ $$
 
 ### （c）使用 population mean baseline 时的方差
 
-由于奖励函数为 \(r(A)=\mathbf 1\{A=1\}\)，因此奖励的总体均值为
+由于奖励函数为 $r(A)=\mathbf 1\{A=1\}$，因此奖励的总体均值为
 
 $$
 b=\mathbb E[r(A)]
@@ -308,7 +308,7 @@ b=\mathbb E[r(A)]
 =p.
 $$
 
-将 \(b=p\) 代入第（b）问的结果：
+将 $b=p$ 代入第（b）问的结果：
 
 $$
 \begin{aligned}
@@ -338,16 +338,16 @@ $$
 \end{aligned}
 $$
 
-当 \(0<p<1\) 时，\(p^2(1-p)/n>0\)，所以方差之差的符号只由
-\(3p-2\) 决定。因此：
+当 0 < p < 1 时，p²(1−p)/n > 0，所以方差之差的符号只由
+3p−2 决定。因此：
 
-- 当 \(0<p<\frac{2}{3}\) 时，\(3p-2<0\)，population mean baseline
+- 当 0 < p < ⅔ 时，3p−2 < 0，population mean baseline
   会降低方差；
-- 当 \(p=\frac{2}{3}\) 时，两种 estimator 的方差相等；
-- 当 \(\frac{2}{3}<p<1\) 时，\(3p-2>0\)，population mean baseline
+- 当 p = ⅔ 时，两种 estimator 的方差相等；
+- 当 ⅔ < p < 1 时，3p−2 > 0，population mean baseline
   反而会增大方差。
 
-特别地，当 \(p=\frac{1}{2}\) 时，
+特别地，当 p = ½ 时，
 
 $$
 \mathrm{Var}(\hat g_p)
@@ -355,5 +355,5 @@ $$
 =0.
 $$
 
-这是因为第（b）问的最优常数 baseline 是 \(b^*=1-p\)；只有在
-\(p=\frac{1}{2}\) 时，population mean baseline \(b=p\) 恰好等于该最优值。
+这是因为第（b）问的最优常数 baseline 是 b* = 1−p；只有在
+p = ½ 时，population mean baseline b = p 恰好等于该最优值。
