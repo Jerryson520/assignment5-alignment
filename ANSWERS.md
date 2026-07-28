@@ -176,7 +176,7 @@ $$
 
 $$
 \begin{aligned}
-\operatorname{Var}(Z_i)
+\mathrm{Var}(Z_i)
 &=\mathbb E[Z_i^2]-\mathbb E[Z_i]^2\\
 &=p(1-p)^2-p^2(1-p)^2\\
 &=p(1-p)^3.
@@ -193,16 +193,16 @@ $$
 
 $$
 \begin{aligned}
-\operatorname{Var}(\hat g)
-&=\operatorname{Var}\left(\frac{1}{n}\sum_{i=1}^n Z_i\right)\\
-&=\frac{1}{n}\operatorname{Var}(Z_i).
+\mathrm{Var}(\hat g)
+&=\mathrm{Var}\left(\frac{1}{n}\sum_{i=1}^n Z_i\right)\\
+&=\frac{1}{n}\mathrm{Var}(Z_i).
 \end{aligned}
 $$
 
 最终得到
 
 $$
-\boxed{\operatorname{Var}(\hat g)=\frac{p(1-p)^3}{n}}.
+\boxed{\mathrm{Var}(\hat g)=\frac{p(1-p)^3}{n}}.
 $$
 
 ### （b）使用常数 baseline $b$ 时的方差
@@ -269,7 +269,7 @@ $$
 
 $$
 \begin{aligned}
-\operatorname{Var}(Z_i)
+\mathrm{Var}(Z_i)
 &=\mathbb E[Z_i^2]-\mathbb E[Z_i]^2\\
 &=p(1-b)^2(1-p)^2+(1-p)b^2p^2-p^2(1-p)^2\\
 &=p(1-p)\left((1-b)^2(1-p)+b^2p-p(1-p)\right)\\
@@ -286,14 +286,14 @@ $$
 所以
 
 $$
-\operatorname{Var}(\hat g_b)=\frac{1}{n}\operatorname{Var}(Z_i).
+\mathrm{Var}(\hat g_b)=\frac{1}{n}\mathrm{Var}(Z_i).
 $$
 
 最终得到
 
 $$
 \boxed{
-\operatorname{Var}(\hat g_b)
+\mathrm{Var}(\hat g_b)
 =\frac{p(1-p)(1-p-b)^2}{n}
 }.
 $$
@@ -312,7 +312,7 @@ $$
 
 $$
 \begin{aligned}
-\operatorname{Var}(\hat g_p)
+\mathrm{Var}(\hat g_p)
 &=\frac{p(1-p)(1-p-b)^2}{n}\\
 &=\frac{p(1-p)(1-2p)^2}{n}.
 \end{aligned}
@@ -321,7 +321,7 @@ $$
 不使用 baseline 时，第（a）问得到
 
 $$
-\operatorname{Var}(\hat g)
+\mathrm{Var}(\hat g)
 =\frac{p(1-p)^3}{n}.
 $$
 
@@ -329,7 +329,7 @@ $$
 
 $$
 \begin{aligned}
-\operatorname{Var}(\hat g_p)-\operatorname{Var}(\hat g)
+\mathrm{Var}(\hat g_p)-\mathrm{Var}(\hat g)
 &=\frac{p(1-p)}{n}
 \left((1-2p)^2-(1-p)^2\right)\\
 &=\frac{p(1-p)}{n}
@@ -350,7 +350,7 @@ $3p-2$ 决定。因此：
 特别地，当 $p=\frac{1}{2}$ 时，
 
 $$
-\operatorname{Var}(\hat g_p)
+\mathrm{Var}(\hat g_p)
 =\frac{p(1-p)(1-2p)^2}{n}
 =0.
 $$
