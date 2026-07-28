@@ -89,3 +89,271 @@
 运算，例如把减少 30% 错误地处理为减去 30。总体而言，few-shot prompting
 显著提高了模型的行为一致性和 GSM8K 准确率，但仅靠格式指令仍不足以让这个 1B
 基础模型稳定地完成数学推理。
+
+## 第二题：`baseline_calcs`
+
+### （a）不使用 baseline 时的方差
+
+令单个样本对应的 policy gradient 项为
+
+$$
+Z_i=r(A_i)\nabla_\theta\log\pi_\theta(A_i).
+$$
+
+由于 $p=\sigma(\theta)$，因此
+
+$$
+\frac{\partial p}{\partial \theta} = p(1-p).
+$$
+
+下面分别讨论 $A_i=1$ 和 $A_i=0$。
+
+当 $A_i=1$ 时，该动作出现的概率为 $p$，奖励为 $r(1)=1$，且
+
+$$
+\begin{aligned}
+\nabla_\theta\log\pi_\theta(A_i=1)
+&=\nabla_\theta\log p\\
+&=\frac{1}{p}p(1-p)\\
+&=1-p.
+\end{aligned}
+$$
+
+因此
+
+$$
+Z_i=1-p,\qquad \text{with probability }p.
+$$
+
+当 $A_i=0$ 时，该动作出现的概率为 $1-p$，奖励为 $r(0)=0$，且
+
+$$
+\begin{aligned}
+\nabla_\theta\log\pi_\theta(A_i=0)
+&=\nabla_\theta\log(1-p)\\
+&=-\frac{1}{1-p}p(1-p)\\
+&=-p.
+\end{aligned}
+$$
+
+由于此时奖励为 0，因此
+
+$$
+Z_i=0\cdot(-p)=0,\qquad \text{with probability }1-p.
+$$
+
+综上，$Z_i$ 的分布为
+
+$$
+Z_i=
+\begin{cases}
+1-p, & \text{with probability }p,\\
+0, & \text{with probability }1-p.
+\end{cases}
+$$
+
+由此可得
+
+$$
+\begin{aligned}
+\mathbb E[Z_i]
+&=p(1-p)+(1-p)\cdot0\\
+&=p(1-p).
+\end{aligned}
+$$
+
+以及
+
+$$
+\begin{aligned}
+\mathbb E[Z_i^2]
+&=p(1-p)^2+(1-p)\cdot0^2\\
+&=p(1-p)^2.
+\end{aligned}
+$$
+
+所以单个样本项的方差为
+
+$$
+\begin{aligned}
+\operatorname{Var}(Z_i)
+&=\mathbb E[Z_i^2]-\mathbb E[Z_i]^2\\
+&=p(1-p)^2-p^2(1-p)^2\\
+&=p(1-p)^3.
+\end{aligned}
+$$
+
+题目中的 estimator 是 $n$ 个独立同分布样本的均值：
+
+$$
+\hat g = \frac{1}{n} \sum_{i=1}^n Z_i.
+$$
+
+由于各个 $Z_i$ 相互独立，
+
+$$
+\begin{aligned}
+\operatorname{Var}(\hat g)
+&=\operatorname{Var}\left(\frac{1}{n}\sum_{i=1}^n Z_i\right)\\
+&=\frac{1}{n}\operatorname{Var}(Z_i).
+\end{aligned}
+$$
+
+最终得到
+
+$$
+\boxed{\operatorname{Var}(\hat g)=\frac{p(1-p)^3}{n}}.
+$$
+
+### （b）使用常数 baseline $b$ 时的方差
+
+加入 baseline $b$ 后，令单个样本对应的 policy gradient 项为
+
+$$
+Z_i=(r(A_i)-b)\nabla_\theta\log\pi_\theta(A_i).
+$$
+
+当 $A_i=1$ 时，该动作出现的概率为 $p$，并且
+
+$$
+r(1)=1,\qquad \nabla_\theta\log\pi_\theta(A_i=1)=1-p.
+$$
+
+因此
+
+$$
+Z_i=(1-b)(1-p),\qquad \text{with probability }p.
+$$
+
+当 $A_i=0$ 时，该动作出现的概率为 $1-p$，并且
+
+$$
+r(0)=0,\qquad \nabla_\theta\log\pi_\theta(A_i=0)=-p.
+$$
+
+因此
+
+$$
+Z_i=(0-b)(-p)=bp,\qquad \text{with probability }1-p.
+$$
+
+所以 $Z_i$ 的分布为
+
+$$
+Z_i=
+\begin{cases}
+(1-b)(1-p), & \text{with probability }p,\\
+bp, & \text{with probability }1-p.
+\end{cases}
+$$
+
+首先计算期望：
+
+$$
+\begin{aligned}
+\mathbb E[Z_i]
+&=p(1-b)(1-p)+(1-p)bp\\
+&=p(1-p).
+\end{aligned}
+$$
+
+可见，引入常数 baseline 并没有改变 policy gradient estimator 的期望。
+再计算二阶矩：
+
+$$
+\mathbb E[Z_i^2]
+=p(1-b)^2(1-p)^2+(1-p)b^2p^2.
+$$
+
+因此，单个样本项的方差为
+
+$$
+\begin{aligned}
+\operatorname{Var}(Z_i)
+&=\mathbb E[Z_i^2]-\mathbb E[Z_i]^2\\
+&=p(1-b)^2(1-p)^2+(1-p)b^2p^2-p^2(1-p)^2\\
+&=p(1-p)\left((1-b)^2(1-p)+b^2p-p(1-p)\right)\\
+&=p(1-p)(1-p-b)^2.
+\end{aligned}
+$$
+
+题目中的 estimator 是 $n$ 个独立同分布样本的平均：
+
+$$
+\hat g_b = \frac{1}{n} \sum_{i=1}^n Z_i.
+$$
+
+所以
+
+$$
+\operatorname{Var}(\hat g_b)=\frac{1}{n}\operatorname{Var}(Z_i).
+$$
+
+最终得到
+
+$$
+\boxed{
+\operatorname{Var}(\hat g_b)
+=\frac{p(1-p)(1-p-b)^2}{n}
+}.
+$$
+
+### （c）使用 population mean baseline 时的方差
+
+由于奖励函数为 $r(A)=\mathbf 1\{A=1\}$，因此奖励的总体均值为
+
+$$
+b=\mathbb E[r(A)]
+=1\cdot p+0\cdot(1-p)
+=p.
+$$
+
+将 $b=p$ 代入第（b）问的结果：
+
+$$
+\begin{aligned}
+\operatorname{Var}(\hat g_p)
+&=\frac{p(1-p)(1-p-b)^2}{n}\\
+&=\frac{p(1-p)(1-2p)^2}{n}.
+\end{aligned}
+$$
+
+不使用 baseline 时，第（a）问得到
+
+$$
+\operatorname{Var}(\hat g)
+=\frac{p(1-p)^3}{n}.
+$$
+
+为了判断 population mean baseline 是否减小方差，比较二者之差：
+
+$$
+\begin{aligned}
+\operatorname{Var}(\hat g_p)-\operatorname{Var}(\hat g)
+&=\frac{p(1-p)}{n}
+\left((1-2p)^2-(1-p)^2\right)\\
+&=\frac{p(1-p)}{n}
+\left(1-4p+4p^2-1+2p-p^2\right)\\
+&=\frac{p^2(1-p)(3p-2)}{n}.
+\end{aligned}
+$$
+
+当 $0<p<1$ 时，$p^2(1-p)/n>0$，所以方差之差的符号只由
+$3p-2$ 决定。因此：
+
+- 当 $0<p<\frac{2}{3}$ 时，$3p-2<0$，population mean baseline
+  会降低方差；
+- 当 $p=\frac{2}{3}$ 时，两种 estimator 的方差相等；
+- 当 $\frac{2}{3}<p<1$ 时，$3p-2>0$，population mean baseline
+  反而会增大方差。
+
+特别地，当 $p=\frac{1}{2}$ 时，
+
+$$
+\operatorname{Var}(\hat g_p)
+=\frac{p(1-p)(1-2p)^2}{n}
+=0.
+$$
+
+这是因为第（b）问的最优常数 baseline 是 $b^*=1-p$；只有在
+$p=\frac{1}{2}$ 时，population mean baseline $b=p$ 恰好等于该最优值。
