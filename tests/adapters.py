@@ -46,7 +46,42 @@ def run_tokenize_prompt_and_output(
                 with labels, with value 1 where the corresponding label token
                 is part of the response and 0 otherwise.
     """
-    raise NotImplementedError
+    prompt_ids = tokenizer(
+        prompt_strs,
+        add_special_tokens=False,
+        padding=False
+    )["input_ids"]
+
+    output_ids = tokenizer(
+        output_strs,
+        add_special_tokens=False,
+        padding=False
+    )["input_ids"]
+
+    combined_ids = []
+    combined_masks = []
+
+    for prompt, output in zip(prompt_ids, output_ids):
+        combined_ids.append(prompt + output)
+        combined_masks.append([0] * len(prompt) + [1] * len(output))
+
+    max_len = max(len(id) for id in combined_ids)
+
+    for i in range(len(combined_ids)):
+        pad_len = max_len - len(combined_ids[i])
+
+        combined_ids[i] += [tokenizer.pad_token_id] * pad_len
+        combined_masks[i] += [0] * pad_len
+
+    tokens = torch.tensor(combined_ids, dtype=torch.long)
+    masks = torch.tensor(combined_masks, dtype=torch.bool)
+
+    return {
+        "input_ids": tokens[:, :-1],
+        "labels": tokens[:, 1:],
+        "response_mask": masks[:, 1:]
+    }
+
 
 
 def run_get_response_log_probs(
@@ -82,8 +117,24 @@ def run_get_response_log_probs(
                 entropy for each position (present only if
                 return_token_entropy=True).
     """
-    raise NotImplementedError
+    logits = model(input_ids).logits
+    all_probs = torch.softmax(logits, dim=-1)
+    all_log_probs = torch.log_softmax(logits, dim=-1)
 
+    log_probs = torch.gather(
+        all_log_probs,
+        dim=-1,
+        index=labels.unsqueeze(-1),
+    ).squeeze(-1)
+
+    token_entropy = -(
+        all_probs * all_log_probs
+    ).sum(dim=-1)
+
+    return {
+        "log_probs": log_probs,
+        "token_entropy": token_entropy
+    }
 
 def run_compute_rollout_rewards(
     reward_fn: Callable[[str, str], dict[str, float]],
@@ -114,7 +165,21 @@ def run_compute_rollout_rewards(
                 Reward statistics to log. At minimum, include the mean total
                 and format rewards over the rollout batch.
     """
-    raise NotImplementedError
+    reward_dicts = [
+        reward_fn(response, ground_truth)
+        for response, ground_truth in zip(rollout_responses, repeated_ground_truths)
+    ]
+    raw_rewards = torch.tensor(
+        [reward["reward"] for reward in reward_dicts],
+        dtype=torch.float32
+    )
+
+    metadata = {
+        "mean_reward": raw_rewards.mean().item(),
+        "mean_format_reward": sum(reward["format_reward"] for reward in reward_dicts),
+        "mean_answer_reward": sum(reward["answer_reward"] for reward in reward_dicts),
+    }
+    return raw_rewards, metadata
 
 
 def run_compute_group_normalized_rewards(
@@ -153,7 +218,19 @@ def run_compute_group_normalized_rewards(
                 your choice of other statistics to log (e.g. mean, std, max/min
                 of rewards).
     """
-    raise NotImplementedError
+    raw_len = len(raw_rewards)
+    raw_rewards = raw_rewards.reshape(-1, group_size)
+    group_means = raw_rewards.mean(dim=-1, keepdim=True)
+    group_stds = raw_rewards.std(dim=-1, keepdim=True)
+
+    advantages = (raw_rewards - group_means) / (group_stds + advantage_eps)
+    metadata = {
+        "mean_reward": raw_rewards.mean().item(),
+        "mean_advantage": advantages.mean().item(),
+        "max_reward": raw_rewards.max().item(),
+        "min_reward": raw_rewards.min().item(),
+    }
+    return advantages.reshape(raw_len), metadata
 
 
 def run_compute_policy_gradient_loss(
@@ -200,7 +277,12 @@ def run_compute_policy_gradient_loss(
                 Statistics from the underlying loss call, such as
                 clip-fraction components.
     """
-    raise NotImplementedError
+    advantages = raw_rewards_or_advantages.reshape(-1, 1)
+    per_token_loss = -(
+        advantages * policy_log_probs
+    )
+    metadata = {}
+    return per_token_loss, metadata
 
 
 def run_aggregate_loss_across_microbatch(
@@ -232,7 +314,14 @@ def run_aggregate_loss_across_microbatch(
             A scalar containing the average loss. Make sure you can later call
             backward on this loss.
     """
-    raise NotImplementedError
+    mask = mask.to(
+        dtype=per_token_policy_gradient_loss.dtype
+    )
+    token_counts = mask.sum(dim=-1)
+    if (token_counts == 0).any():
+        raise ValueError("A sequence has no response tokens.")
+    seq_losses = (per_token_policy_gradient_loss * mask).sum(dim=-1) / token_counts
+    return seq_losses.mean(dim=-1)
 
 
 def run_grpo_train_step(
@@ -321,11 +410,166 @@ def run_grpo_train_step(
                 Dict with metadata from the underlying loss call, gradient norm
                 before clipping, and any other statistics you might want to log.
     """
-    raise NotImplementedError
+        # This problem only requires standard on-policy GRPO.
+    if baseline != "mean":
+        raise NotImplementedError(
+            "Only baseline='mean' is supported."
+        )
+    if advantage_normalizer != "std":
+        raise NotImplementedError(
+            "Only advantage_normalizer='std' is supported."
+        )
+    if importance_reweighting_method != "none":
+        raise NotImplementedError(
+            "Only on-policy training is supported."
+        )
+    if loss_normalization != "sequence":
+        raise NotImplementedError(
+            "Only sequence normalization is supported."
+        )
+
+    rollout_batch_size = len(repeated_prompts)
+
+    if rollout_batch_size == 0:
+        raise ValueError("The rollout batch cannot be empty.")
+
+    if len(rollout_responses) != rollout_batch_size:
+        raise ValueError(
+            "repeated_prompts and rollout_responses "
+            "must have the same length."
+        )
+
+    if len(repeated_ground_truths) != rollout_batch_size:
+        raise ValueError(
+            "repeated_prompts and repeated_ground_truths "
+            "must have the same length."
+        )
+
+    if group_size <= 0:
+        raise ValueError("group_size must be positive.")
+
+    if rollout_batch_size % group_size != 0:
+        raise ValueError(
+            "rollout_batch_size must be divisible by group_size."
+        )
+
+    if gradient_accumulation_steps <= 0:
+        raise ValueError(
+            "gradient_accumulation_steps must be positive."
+        )
+
+    if gradient_accumulation_steps > rollout_batch_size:
+        raise ValueError(
+            "gradient_accumulation_steps cannot exceed "
+            "rollout_batch_size."
+        )
+
+    raw_rewards, rewards_metadata = run_compute_rollout_rewards(
+        reward_fn=reward_fn,
+        rollout_responses=rollout_responses,
+        repeated_ground_truths=repeated_ground_truths
+    )
+
+    advantages, advantage_metadata = run_compute_group_normalized_rewards(
+        raw_rewards=raw_rewards,
+        group_size=group_size,
+        baseline=baseline,
+        advantage_eps=advantage_eps,
+        advantage_normalizer=advantage_normalizer
+    )
+
+    tokenized = run_tokenize_prompt_and_output(
+        prompt_strs=repeated_prompts,
+        output_strs=rollout_responses,
+        tokenizer=tokenizer,
+    )
+
+    input_ids = tokenized["input_ids"]
+    labels = tokenized["labels"]
+    response_mask = tokenized["response_mask"]
+
+    device = (next(model.parameters())).device
+    if rollout_batch_size % gradient_accumulation_steps != 0:
+        raise ValueError(
+            "rollout_batch_size must be divisible by "
+            "gradient_accumulation_steps."
+        )
+    micro_batch_size = rollout_batch_size // gradient_accumulation_steps
+
+    batch_loss = torch.zeros((), dtype=torch.float32, device=device)
+    entropy_sum = torch.zeros((), dtype=torch.float32, device=device)
+    response_token_count = torch.zeros((), dtype=torch.float32, device=device)
+    optimizer.zero_grad(set_to_none=True)
+
+    for idx in range(gradient_accumulation_steps):
+        start_idx = idx * micro_batch_size
+        end_idx = start_idx + micro_batch_size
+
+        micro_input_ids = input_ids[start_idx: end_idx].to(device)
+        micro_labels = labels[start_idx: end_idx].to(device)
+        micro_response_mask = response_mask[start_idx: end_idx].to(device)
+        micro_advantages = advantages[start_idx: end_idx].to(device)
+
+        log_probs_output = run_get_response_log_probs(
+            model=model,
+            input_ids=micro_input_ids,
+            labels=micro_labels,
+            return_token_entropy=True,
+        )
+
+        log_probs = log_probs_output["log_probs"]
+        token_entropy = log_probs_output["token_entropy"]
+
+        per_token_loss, gradient_loss_metadata = run_compute_policy_gradient_loss(
+            raw_rewards_or_advantages=micro_advantages,
+            policy_log_probs=log_probs,
+            importance_reweighting_method=importance_reweighting_method,
+            old_log_probs=old_log_probs,
+            cliprange=cliprange,
+            response_mask=micro_response_mask,
+        )
+
+        micro_batch_loss = run_aggregate_loss_across_microbatch(
+            per_token_policy_gradient_loss=per_token_loss,
+            mask=micro_response_mask,
+            loss_normalization=loss_normalization,
+            normalization_constant=normalization_constant
+        )
+
+        importance_reweight = micro_batch_size / rollout_batch_size
+        scaled_loss = micro_batch_loss * importance_reweight
+        scaled_loss.backward()
+
+        batch_loss += scaled_loss.detach()
+        entropy_sum += (token_entropy.detach() * micro_response_mask).sum()
+        response_token_count += micro_response_mask.sum()
+
+    clipping_threshold = max_grad_norm if max_grad_norm is not None else float("inf")
+    gradient_norm = torch.nn.utils.clip_grad_norm_(
+        model.parameters(),
+        clipping_threshold,
+    )
+
+    optimizer.step()
+    optimizer.zero_grad(set_to_none=True)
+    if (response_token_count == 0).any():
+        raise ValueError("Each sequence must contain at least one response token.")
+
+    mean_token_entropy = entropy_sum / response_token_count
+    metadata = {
+        **rewards_metadata,
+        **advantage_metadata,
+        **gradient_loss_metadata,
+        "loss": batch_loss,
+        "gradient_norm": gradient_norm.detach(),
+        "token_entropy": mean_token_entropy.detach(),
+    }
+    return batch_loss, metadata
+
 
 
 """
-The below adapters are used in the optional 
+The below adapters are used in the optional
 RLHF / safety part of the Alignment assignment.
 """
 

@@ -1,0 +1,19 @@
+uv run python -m scripts.grpo_train \
+    --model-name allenai/OLMo-2-0425-1B \
+    --prompt-path cs336_alignment/prompts/r1_zero.prompt \
+    --train-path data/gsm8k/train.jsonl \
+    --validation-path data/gsm8k/test.jsonl \
+    --num-rollout-steps 1 \
+    --rollout-batch-size 8 \
+    --group-size 2 \
+    --gradient-accumulation-steps 2 \
+    --learning-rate 1e-5 \
+    --max-grad-norm 1.0 \
+    --temperature 1.0 \
+    --max-tokens 128 \
+    --eval-every 10 \
+    --log-rollout-every 40 \
+    --n-validation-samples 32 \
+    --seed 0 \
+    --training-device cuda:0 \
+    --vllm-gpu 1
