@@ -9,6 +9,9 @@ import random
 from tests.adapters import run_grpo_train_step
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ROLLOUT_LOG_PATH = PROJECT_ROOT / "results" / "grpo_rollouts.jsonl"
+
 @dataclass
 class GRPOConfig:
     model_name: str
@@ -93,10 +96,101 @@ def load_gsm8k(path: Path):
             })
     return examples
 
+def evaluate(
+    vllm_server: VLLMServer, 
+    validation_dataset: list[dict[str, str]],
+    prompt_template: str,
+    config: GRPOConfig,
+    step: int
+):
+    examples = validation_dataset[:config.n_validation_samples]
+
+    prompts = [
+        prompt_template.format(question=example["question"]) 
+        for example in examples
+    ]
+
+    ground_truths = [example["ground_truth"] for example in examples]
+
+    sampling_params = {
+        "temperature": config.temperature,
+        "max_tokens": config.max_tokens,
+        "n": 1,
+        "seed": config.seed + step,
+        "stop": ["</answer>"],
+        "include_stop_str_in_output": True
+    }
+
+    completions = vllm_server.generate_completions(
+        prompts,
+        sampling_params,
+        batch_size=32
+    )
+
+    reward_dicts = [
+        r1_zero_reward_fn(completion.text, ground_truth)
+        for completion, ground_truth in zip(completions, ground_truths)
+    ]
+
+    mean_reward = sum(reward_dict["reward"] for reward_dict in reward_dicts) / len(reward_dicts)
+    mean_format_accuracy = sum(reward_dict["format_reward"] for reward_dict in reward_dicts) / len(reward_dicts)
+    mean_answer_accuracy = sum(reward_dict["answer_reward"] for reward_dict in reward_dicts) / len(reward_dicts)
+
+    print(
+        f"validation step={step} | "
+        f"n={len(examples)} | "
+        f"mean_reward={mean_reward:.4f} | "
+        f"mean_format_accuracy={mean_format_accuracy:.4f} | "
+        f"mean_answer_accuracy={mean_answer_accuracy:.4f}",
+        flush=True
+    )
+
+def log_rollouts(
+    step: int, 
+    repeated_prompts: list[str],
+    repeated_responses: list[str],
+    repeated_ground_truths: list[str],
+    output_path: Path = ROLLOUT_LOG_PATH,
+):
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with output_path.open("a", encoding="utf-8") as f:
+        for prompt, response, ground_truth in zip(
+            repeated_prompts, 
+            repeated_responses, 
+            repeated_ground_truths
+        ):
+            reward = r1_zero_reward_fn(response, ground_truth)
+
+            record = {
+                "step": step,
+                "prompt": prompt,
+                "response": response,
+                "ground_truth": ground_truth,
+                **reward,
+            }
+
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")      
+
 def train_grpo(config: GRPOConfig):
     ## 1. Initialization
     train_dataset = load_gsm8k(config.train_path)
     validation_dataset = load_gsm8k(config.validation_path)
+
+    if config.log_rollout_every <= 0:
+        raise ValueError("log_rollout_every must be positive")
+
+    if config.eval_every <= 0:
+        raise ValueError("eval_every must be positive")
+
+    if config.n_validation_samples <= 0:
+        raise ValueError("n_validation_samples must be positive")
+
+    if config.n_validation_samples > len(validation_dataset):
+        raise ValueError(
+            "n_validation_samples exceeds validation dataset size"
+        )
+    
     tokenizer = AutoTokenizer.from_pretrained(config.model_name)
 
     policy = AutoModelForCausalLM.from_pretrained(
@@ -141,6 +235,8 @@ def train_grpo(config: GRPOConfig):
 
     ## 4. rollouts
     for step in range(config.num_rollout_steps):
+        step_number = step + 1
+
         start = step * prompts_per_rollout_batch
         end = start + prompts_per_rollout_batch
         prompt_batch = shuffled_train_dataset[start: end]
@@ -199,15 +295,33 @@ def train_grpo(config: GRPOConfig):
         )
 
         print(
-            f"step={step} | "
+            f"step={step_number} | "
             f"loss={loss.item():.6f} | "
-            f"reward={metadata["mean_reward"]:.4f} | "
-            f"format_reward={metadata["mean_format_reward"]:.4f} | "
-            f"gradient_norm={metadata["gradient_norm"].item():.4f} | "
-            f"token_entropy={metadata["token_entropy"].item():.4f}",
+            f"reward={metadata['mean_reward']:.4f} | "
+            f"format_reward={metadata['mean_format_reward']:.4f} | "
+            f"gradient_norm={metadata['gradient_norm'].item():.4f} | "
+            f"token_entropy={metadata['token_entropy'].item():.4f}",
             flush=True
         )
+        
+        if step_number % config.log_rollout_every == 0:
+            log_rollouts(
+                step=step_number,
+                repeated_prompts=repeated_prompts,
+                repeated_responses=rollout_responses,
+                repeated_ground_truths=repeated_ground_truths
+            )
+ 
+        if step_number % config.eval_every == 0:
+            vllm_server.sync_policy_weights(policy)
 
+            evaluate(
+                vllm_server=vllm_server,
+                validation_dataset=validation_dataset,
+                prompt_template=prompt_template,
+                config=config,
+                step=step_number
+            )
 
 
 def main():
