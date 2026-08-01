@@ -199,11 +199,11 @@ def train_grpo(config: GRPOConfig):
         )
 
         print(
-            f"step={step}"
-            f"loss={loss.item():.6f}"
-            f"reward={metadata["mean_reward"]:.4f}"
-            f"format_reward={metadata["mean_format_reward"]:.4f}"
-            f"gradient_norm={metadata["gradient_norm"].item():.4f}"
+            f"step={step} | "
+            f"loss={loss.item():.6f} | "
+            f"reward={metadata["mean_reward"]:.4f} | "
+            f"format_reward={metadata["mean_format_reward"]:.4f} | "
+            f"gradient_norm={metadata["gradient_norm"].item():.4f} | "
             f"token_entropy={metadata["token_entropy"].item():.4f}",
             flush=True
         )

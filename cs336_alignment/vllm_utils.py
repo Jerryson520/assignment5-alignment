@@ -34,7 +34,7 @@ class VLLMServer:
     seed: int = 0
     load_format: str = "auto"
     logging_level: str = "ERROR"
-    gpu_memory_utilization: float = 0.9
+    gpu_memory_utilization: float = 0.8
     launch_server: bool = True
     startup_timeout: int = 600
     shutdown_timeout: int = 30

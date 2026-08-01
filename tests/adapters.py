@@ -176,8 +176,8 @@ def run_compute_rollout_rewards(
 
     metadata = {
         "mean_reward": raw_rewards.mean().item(),
-        "mean_format_reward": sum(reward["format_reward"] for reward in reward_dicts),
-        "mean_answer_reward": sum(reward["answer_reward"] for reward in reward_dicts),
+        "mean_format_reward": sum(reward["format_reward"] for reward in reward_dicts) / len(reward_dicts),
+        "mean_answer_reward": sum(reward["answer_reward"] for reward in reward_dicts) / len(reward_dicts),
     }
     return raw_rewards, metadata
 

@@ -1,5 +1,5 @@
-uv run python -m scripts.grpo_train \
-    --model-name allenai/OLMo-2-0425-1B \
+uv run --no-sync python -m scripts.grpo_train \
+    --model-name /root/autodl-tmp/models/OLMo-2-0425-1B \
     --prompt-path cs336_alignment/prompts/r1_zero.prompt \
     --train-path data/gsm8k/train.jsonl \
     --validation-path data/gsm8k/test.jsonl \
