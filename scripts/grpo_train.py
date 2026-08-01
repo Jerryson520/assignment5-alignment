@@ -24,7 +24,7 @@ class GRPOConfig:
     learning_rate: float
     max_grad_norm: float
 
-    temperature: int
+    temperature: float
     max_tokens: int
 
     eval_every: int
@@ -104,7 +104,7 @@ def train_grpo(config: GRPOConfig):
         torch_dtype=torch.bfloat16
     ).to(config.training_device)
 
-    optimizer = optimizer = torch.optim.AdamW(
+    optimizer = torch.optim.AdamW(
         policy.parameters(), lr=config.learning_rate, betas=(0.9, 0.95), weight_decay=0.0
     )
 
@@ -207,6 +207,8 @@ def train_grpo(config: GRPOConfig):
             f"token_entropy={metadata["token_entropy"].item():.4f}",
             flush=True
         )
+
+
 
 def main():
     config = parse_args()

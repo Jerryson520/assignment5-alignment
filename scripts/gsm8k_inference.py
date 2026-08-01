@@ -135,9 +135,6 @@ def main():
                 f1.write(json.dumps(record, ensure_ascii=False) + "\n")
 
         tqdm.write(f"{prompt_name}: {summary}")
-                
-            
-
 
 if __name__ == "__main__":
     main()
