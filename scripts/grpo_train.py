@@ -8,6 +8,7 @@ import json
 import random
 from tests.adapters import run_grpo_train_step
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
+import wandb
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ROLLOUT_LOG_PATH = PROJECT_ROOT / "results" / "grpo_rollouts.jsonl"
@@ -135,15 +136,24 @@ def evaluate(
     mean_reward = sum(reward_dict["reward"] for reward_dict in reward_dicts) / len(reward_dicts)
     mean_format_accuracy = sum(reward_dict["format_reward"] for reward_dict in reward_dicts) / len(reward_dicts)
     mean_answer_accuracy = sum(reward_dict["answer_reward"] for reward_dict in reward_dicts) / len(reward_dicts)
+    mean_response_length = sum(len(completion.token_ids) for completion in completions) / len(completions)
 
     print(
         f"validation step={step} | "
         f"n={len(examples)} | "
         f"mean_reward={mean_reward:.4f} | "
         f"mean_format_accuracy={mean_format_accuracy:.4f} | "
-        f"mean_answer_accuracy={mean_answer_accuracy:.4f}",
-        flush=True
+        f"mean_answer_accuracy={mean_answer_accuracy:.4f} | "
+        f"mean_response_length={mean_response_length:.2f}",
+        flush=True,
     )
+
+    return {
+        "val/reward": mean_reward,
+        "val/format_reward": mean_format_accuracy,
+        "val/answer_accuracy": mean_answer_accuracy,
+        "val/average_response_length": mean_response_length,
+    }
 
 def log_rollouts(
     step: int, 
@@ -153,6 +163,17 @@ def log_rollouts(
     output_path: Path = ROLLOUT_LOG_PATH,
 ):
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    table = wandb.Table(
+        columns=[
+            "step",
+            "prompt",
+            "response",
+            "ground_truth",
+            "reward",
+            "format_reward",
+            "answer_reward",
+        ]
+    )
 
     with output_path.open("a", encoding="utf-8") as f:
         for prompt, response, ground_truth in zip(
@@ -170,7 +191,18 @@ def log_rollouts(
                 **reward,
             }
 
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")      
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            table.add_data(
+                step,
+                prompt,
+                response,
+                ground_truth,
+                reward["reward"],
+                reward["format_reward"],
+                reward["answer_reward"],
+            )
+    
+    return table  
 
 def train_grpo(config: GRPOConfig):
     ## 1. Initialization
@@ -190,7 +222,6 @@ def train_grpo(config: GRPOConfig):
         raise ValueError(
             "n_validation_samples exceeds validation dataset size"
         )
-    
     tokenizer = AutoTokenizer.from_pretrained(config.model_name)
 
     policy = AutoModelForCausalLM.from_pretrained(
@@ -200,6 +231,16 @@ def train_grpo(config: GRPOConfig):
 
     optimizer = torch.optim.AdamW(
         policy.parameters(), lr=config.learning_rate, betas=(0.9, 0.95), weight_decay=0.0
+    )
+
+    wandb_config = {
+        key: str(value) if isinstance(value, Path) else value
+        for key, value in vars(config).items()
+    }
+
+    wandb.init(
+        project="cs336-assignment5-grpo",
+        config=wandb_config,
     )
 
     ## 2. 启动vllm server
@@ -294,6 +335,14 @@ def train_grpo(config: GRPOConfig):
             group_size=config.group_size
         )
 
+        wandb_metrics = {
+            "train/loss": loss.item(),
+            "train/reward": metadata["mean_reward"],
+            "train/format_reward": metadata["mean_format_reward"],
+            "train/gradient_norm": metadata["gradient_norm"].item(),
+            "train/token_entropy": metadata["token_entropy"].item(),
+        }
+
         print(
             f"step={step_number} | "
             f"loss={loss.item():.6f} | "
@@ -303,19 +352,21 @@ def train_grpo(config: GRPOConfig):
             f"token_entropy={metadata['token_entropy'].item():.4f}",
             flush=True
         )
+
         
         if step_number % config.log_rollout_every == 0:
-            log_rollouts(
+            rollout_table = log_rollouts(
                 step=step_number,
                 repeated_prompts=repeated_prompts,
                 repeated_responses=rollout_responses,
                 repeated_ground_truths=repeated_ground_truths
             )
+            wandb_metrics["train/rollouts"] = rollout_table
  
         if step_number % config.eval_every == 0:
             vllm_server.sync_policy_weights(policy)
 
-            evaluate(
+            validation_metrics = evaluate(
                 vllm_server=vllm_server,
                 validation_dataset=validation_dataset,
                 prompt_template=prompt_template,
@@ -323,6 +374,14 @@ def train_grpo(config: GRPOConfig):
                 step=step_number
             )
 
+            wandb_metrics.update(validation_metrics)
+
+        wandb.log(
+            wandb_metrics,
+            step=step_number,
+        )
+
+    wandb.finish()
 
 def main():
     config = parse_args()
