@@ -466,11 +466,12 @@ log_probs = torch.gather(
 `(batch_size, sequence_length)` 变为
 `(batch_size, sequence_length, 1)`，使其可以在词表维度上作为索引。
 取值并移除最后一个大小为 1 的维度后，
-`log_probs` 的形状为 `(batch_size, sequence_length)`，且
+`log_probs` 的形状为 `(batch_size, sequence_length)`。令
+$\ell_{b,t}$ 表示 `log_probs[b, t]`，$y_{b,t}$ 表示该位置的 label token，则
 
 $$
-\text{log\_probs}_{b,t}
-=\log p_\theta(\text{labels}_{b,t}\mid x_{b,<t}).
+\ell_{b,t}
+=\log p_\theta\!\left(y_{b,t}\mid x_{b,1:t-1}\right).
 $$
 
 如果 `return_token_entropy=True`，还要计算每个位置上整个词表分布的 entropy：
@@ -478,8 +479,8 @@ $$
 $$
 H_{b,t}
 =-\sum_{v\in\mathcal V}
-p_\theta(v\mid x_{b,<t})
-\log p_\theta(v\mid x_{b,<t}).
+p_\theta\!\left(v\mid x_{b,1:t-1}\right)
+\log p_\theta\!\left(v\mid x_{b,1:t-1}\right).
 $$
 
 对应实现为：
