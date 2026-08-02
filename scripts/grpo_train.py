@@ -240,6 +240,8 @@ def train_grpo(config: GRPOConfig):
 
     wandb.init(
         project="cs336-assignment5-grpo",
+        name=f"grpo-r1-zero-seed-{config.seed}",
+        group="grpo-r1-zero-standard",
         config=wandb_config,
     )
 
