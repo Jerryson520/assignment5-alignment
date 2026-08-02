@@ -620,9 +620,7 @@ group_stds = grouped_rewards.std(dim=-1, keepdim=True)
 group 的所有 response 上。GRPO advantage 为
 
 $$
-A_{i,j}
-=
-\frac{r_{i,j}-\mu_i}{\sigma_i+\epsilon},
+A_{i,j}=\frac{r_{i,j}-\mu_i}{\sigma_i+\epsilon}.
 $$
 
 其中
@@ -635,12 +633,7 @@ $$
 Bessel correction，即
 
 $$
-\sigma_i
-=
-\sqrt{
-\frac{1}{G-1}
-\sum_{j=1}^{G}(r_{i,j}-\mu_i)^2
-}.
+\sigma_i=\sqrt{\frac{1}{G-1}\sum_{j=1}^{G}(r_{i,j}-\mu_i)^2}.
 $$
 
 分母加入 `advantage_eps`，可以避免某一组所有 reward 相同时发生除零：
@@ -674,10 +667,7 @@ group_size = 2
 每组均值均为 0.5，默认样本标准差均为
 
 $$
-\sqrt{
-\frac{(1-0.5)^2+(0-0.5)^2}{2-1}
-}
-=\sqrt{0.5}.
+\sqrt{\frac{(1-0.5)^2+(0-0.5)^2}{2-1}}=\sqrt{0.5}.
 $$
 
 因此输出约为
