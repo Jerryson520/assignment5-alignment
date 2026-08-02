@@ -690,3 +690,90 @@ $$
 ```bash
 uv run pytest -k test_compute_group_normalized_rewards_grpo
 ```
+
+## 4.3 Experiments
+
+### Problem: `grpo_experiments_standard_on_policy` — Standard on-policy GRPO on GSM8K
+
+#### （a）训练脚本和实验设置
+
+完整训练入口为 [`scripts/grpo_train.py`](scripts/grpo_train.py)，四个随机种子的启动
+脚本为 [`scripts/run-4-seeds.sh`](scripts/run-4-seeds.sh)。训练脚本接收模型、prompt、
+训练/验证数据路径、采样参数和训练参数；初始化 OLMo-2-0425-1B、AdamW、vLLM server、
+GSM8K 数据和 W&B 后，每一步依次同步权重、执行 on-policy rollout、计算组内归一化
+advantage、更新 policy，并定期验证和记录 rollout。
+
+实验使用题目建议的超参数：200 个 rollout steps、学习率 $10^{-5}$、256 responses/batch、
+每个 prompt 生成 8 个 responses、32 次 gradient accumulation、temperature 1.0、最多
+512 tokens、最大 gradient norm 1.0。每 10 steps 在 1,024 个 GSM8K validation
+examples 上评测一次，每 40 steps 保存一次 rollout。四个完整 run 使用 seed 0、1、2、3；
+W&B 中早期只运行 50 steps 的旧 seed-0 run 不计入最终统计。原始交互式曲线和 rollout
+tables 见 [W&B workspace](https://wandb.ai/jerry520/cs336-assignment5-grpo/workspace?nw=nwuserjerry520)。
+
+#### （b）50-step sanity check
+
+前 50 steps 已经给出了清晰的正确性证据。四个 seed 的 validation reward 从 step 10
+的 0.0000--0.0313 上升到 step 50 的 0.2695、0.2959、0.3955、0.3477；同时 validation
+format reward 从 0.5127--0.6563 上升到 0.8828--0.9727。也就是说，提升同时出现在
+答案正确性和格式遵循上，而不是只由某一个 batch 的偶然 reward 造成。训练没有出现
+NaN、无限 gradient norm 或 reward 崩溃，因此我继续运行了完整的 200 steps。
+
+#### （c）四个随机种子的完整结果
+
+下图由 W&B public histories 生成。每条浅色实线代表一个 seed；loss、gradient norm、
+entropy 和 response length 面板中的黑线是四个 seed 的均值，灰色区域是逐 step 的
+min--max 区间。reward 面板的实线为 total reward，虚线为 format reward。
+
+![Standard on-policy GRPO metrics across four seeds](results/grpo_standard_metrics.png)
+
+各指标的变化如下：
+
+- Policy-gradient loss 在 0 附近呈有噪声的负值（大多约为 $-0.01$ 到 $-0.04$），
+  没有持续增大或发散。该 surrogate loss 本身不要求单调下降。
+- Gradient norm 从接近 0 上升后主要在约 0.8--1.3 附近波动，偶尔出现约 1.8 的峰值，
+  但没有持续增长；训练使用 `max_grad_norm=1.0` 进行 clipping。
+- Token entropy 从约 0.9--1.2 快速下降，在约 step 60 后稳定在 0.10--0.16，说明 policy
+  随着训练变得更确定。四个 seed 的下降轨迹相似。
+- Train total reward 从接近 0 提升到约 0.4--0.6，但因为它只基于当前 rollout batch，
+  step 间波动明显。Train format reward 很快达到约 0.9--0.98。
+- Validation total reward 的趋势比 train reward 平滑：约 step 60 后达到 0.36--0.41，
+  随后缓慢提升，并在 step 200 收敛到 0.4570--0.4658。Validation format reward
+  最终为 0.9355--0.9580。
+- Validation average response length 在训练前期的 seed 间差异较大，但后期收敛到
+  135--144 tokens。长度没有无界增长，因此 reward 提升不像是由不断延长回答造成的。
+
+最终验证结果为：
+
+| Seed | Final val reward / accuracy | Final val format reward | Final average response length |
+|---:|---:|---:|---:|
+| 0 | 0.4570 | 0.9355 | 135.14 |
+| 1 | 0.4658 | 0.9580 | 144.01 |
+| 2 | 0.4629 | 0.9355 | 136.10 |
+| 3 | 0.4639 | 0.9580 | 139.22 |
+| **Mean** | **0.4624** | **0.9468** | **138.62** |
+
+四个 seed 的最终 validation accuracy 均值为 46.24%，样本标准差为 0.38 个百分点，
+范围为 45.70%--46.58%（最大差距 0.88 个百分点）。因此本实验不仅明显超过题目要求的
+25% 平均准确率，而且最终结果的 seed 方差很小。需要注意的是，早期“开始学习”的时间
+存在更明显的 seed 差异；例如 step 50 的 validation reward 范围仍有 0.2695--0.3955。
+
+#### 训练前后的 rollout 示例
+
+训练前的 `r1_zero` baseline 经常遵循标签格式，但算术推理错误。例如：
+
+1. 对于“16 个蛋，吃 3 个、烘焙用 4 个，剩余每个卖 2 美元”，模型错误地把问题扩展成
+   每日 144 个蛋并输出 `<answer>... $288 ...</answer>`，而正确答案是 18。
+2. 对于“蓝色布料 2 bolts，白色为其一半，总共多少”，模型错误地计算为
+   `<answer>... totals 1 bolt ...</answer>`，而正确答案是 3。
+
+step 200 的实际 rollout 已能稳定完成多步算术并给出简洁的标签化答案。例如：
+
+1. 对于“5 包金枪鱼每包 2 美元、4 瓶水每瓶 1.5 美元、总共支付 56 美元，其他商品花费
+   多少”，模型计算 $5\times2=10$、$4\times1.5=6$、$56-(10+6)=40$，并输出
+   `<answer> 40 </answer>`，与 ground truth 一致。
+2. 对于“第一周每天训练 2 小时，第二周每天训练 3 小时，两周共多少小时”，模型计算
+   $2\times7=14$、$3\times7=21$、$14+21=35$，并输出
+   `<answer> 35 </answer>`，与 ground truth 一致。
+
+这些例子与定量结果一致：训练后模型不只是更经常生成合法的 `<think>`/`<answer>`
+结构，也更经常完成正确的中间运算并把最终数值单独放入 answer 标签中。
