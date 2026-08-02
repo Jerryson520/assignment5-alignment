@@ -11,7 +11,6 @@ from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 import wandb
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-ROLLOUT_LOG_PATH = PROJECT_ROOT / "results" / "grpo_rollouts.jsonl"
 
 @dataclass
 class GRPOConfig:
@@ -160,7 +159,7 @@ def log_rollouts(
     repeated_prompts: list[str],
     repeated_responses: list[str],
     repeated_ground_truths: list[str],
-    output_path: Path = ROLLOUT_LOG_PATH,
+    output_path: Path,
 ):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     table = wandb.Table(
@@ -238,11 +237,16 @@ def train_grpo(config: GRPOConfig):
         for key, value in vars(config).items()
     }
 
-    wandb.init(
+    wandb_run = wandb.init(
         project="cs336-assignment5-grpo",
         name=f"grpo-r1-zero-seed-{config.seed}",
         group="grpo-r1-zero-standard",
         config=wandb_config,
+    )
+    rollout_log_path = (
+        PROJECT_ROOT
+        / "results"
+        / f"grpo_rollouts_seed_{config.seed}_{wandb_run.id}.jsonl"
     )
 
     ## 2. 启动vllm server
@@ -361,7 +365,8 @@ def train_grpo(config: GRPOConfig):
                 step=step_number,
                 repeated_prompts=repeated_prompts,
                 repeated_responses=rollout_responses,
-                repeated_ground_truths=repeated_ground_truths
+                repeated_ground_truths=repeated_ground_truths,
+                output_path=rollout_log_path,
             )
             wandb_metrics["train/rollouts"] = rollout_table
  
