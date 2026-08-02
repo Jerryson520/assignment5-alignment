@@ -3,7 +3,13 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-for seed in 0 1 2 3; do
+if (( $# > 0 )); then
+    seeds=("$@")
+else
+    seeds=(0 1 2 3)
+fi
+
+for seed in "${seeds[@]}"; do
     echo "Starting GRPO training with seed=${seed}"
 
     uv run --no-sync python -m scripts.grpo_train \

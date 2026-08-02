@@ -322,7 +322,10 @@ def train_grpo(config: GRPOConfig):
                 f"received {len(completions)}."
             )
 
-        rollout_responses = [completion.text for completion in completions]
+        rollout_responses = [
+            completion.text if completion.text else tokenizer.eos_token
+            for completion in completions
+        ]
 
         repeated_prompts = [prompt for prompt in prompts for _ in range(config.group_size)]
         repeated_ground_truths = [ground_truth for ground_truth in ground_truths for _ in range(config.group_size)]
