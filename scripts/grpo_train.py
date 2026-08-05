@@ -41,6 +41,7 @@ class GRPOConfig:
     seed: int
     training_device: str
     vllm_gpu: int
+    vllm_port: int
 
 def parse_args() -> GRPOConfig:
     parser = argparse.ArgumentParser(
@@ -84,6 +85,7 @@ def parse_args() -> GRPOConfig:
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--training-device", type=str, required=True)
     parser.add_argument("--vllm-gpu", type=int, required=True)
+    parser.add_argument("--vllm-port", type=int, default=8000)
 
     args = parser.parse_args()
 
@@ -110,6 +112,7 @@ def parse_args() -> GRPOConfig:
         seed=args.seed,
         training_device=args.training_device,
         vllm_gpu=args.vllm_gpu,
+        vllm_port=args.vllm_port,
     )
 
 def load_gsm8k(path: Path):
@@ -280,7 +283,8 @@ def train_grpo(config: GRPOConfig):
     vllm_server = VLLMServer(
         model_id=config.model_name,
         gpu=config.vllm_gpu,
-        seed=config.seed
+        seed=config.seed,
+        port=config.vllm_port,
     )
     vllm_server.start()
     vllm_server.init_weight_sync(config.training_device)

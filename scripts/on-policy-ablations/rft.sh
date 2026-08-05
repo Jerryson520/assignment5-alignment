@@ -3,6 +3,15 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+training_gpu="${TRAINING_GPU:-0}"
+vllm_gpu="${VLLM_GPU:-1}"
+vllm_port="${VLLM_PORT:-8000}"
+
+if [[ "${training_gpu}" == "${vllm_gpu}" ]]; then
+    echo "TRAINING_GPU and VLLM_GPU must be different." >&2
+    exit 1
+fi
+
 if (( $# > 0 )); then
     seeds=("$@")
 else
@@ -33,8 +42,9 @@ for seed in "${seeds[@]}"; do
         --log-rollout-every 40 \
         --n-validation-samples 1024 \
         --seed "${seed}" \
-        --training-device cuda:0 \
-        --vllm-gpu 1
+        --training-device "cuda:${training_gpu}" \
+        --vllm-gpu "${vllm_gpu}" \
+        --vllm-port "${vllm_port}"
 
     echo "Finished RFT training with seed=${seed}"
 done
