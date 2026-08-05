@@ -82,8 +82,6 @@ def run_tokenize_prompt_and_output(
         "response_mask": masks[:, 1:]
     }
 
-
-
 def run_get_response_log_probs(
     model: torch.nn.Module,
     input_ids: torch.Tensor,
@@ -220,10 +218,21 @@ def run_compute_group_normalized_rewards(
     """
     raw_len = len(raw_rewards)
     raw_rewards = raw_rewards.reshape(-1, group_size)
-    group_means = raw_rewards.mean(dim=-1, keepdim=True)
-    group_stds = raw_rewards.std(dim=-1, keepdim=True)
+    if baseline == "mean":
+        group_mean = raw_rewards.mean(dim=-1, keepdim=True)
+        numerator = raw_rewards - group_mean
+    elif baseline == "none":
+        numerator = raw_rewards
 
-    advantages = (raw_rewards - group_means) / (group_stds + advantage_eps)
+    if advantage_normalizer == "std":
+        group_stds = raw_rewards.std(dim=-1, keepdim=True)
+        denominator = group_stds + advantage_eps
+    elif advantage_normalizer == "none":
+        denominator = 1
+    elif advantage_normalizer == "mean":
+        denominator = raw_rewards.mean(dim=-1, keepdim=True) + advantage_eps
+
+    advantages = numerator / denominator
     metadata = {
         "mean_reward": raw_rewards.mean().item(),
         "mean_advantage": advantages.mean().item(),
@@ -317,11 +326,17 @@ def run_aggregate_loss_across_microbatch(
     mask = mask.to(
         dtype=per_token_policy_gradient_loss.dtype
     )
-    token_counts = mask.sum(dim=-1)
-    if (token_counts == 0).any():
-        raise ValueError("A sequence has no response tokens.")
-    seq_losses = (per_token_policy_gradient_loss * mask).sum(dim=-1) / token_counts
-    return seq_losses.mean(dim=-1)
+    if normalization_constant:
+        denominator = normalization_constant
+        total_loss = (per_token_policy_gradient_loss * mask).sum() / normalization_constant
+    else:
+        token_counts = mask.sum(dim=-1)
+        if (token_counts == 0).any():
+            raise ValueError("A sequence has no response tokens.")
+        seq_losses = (per_token_policy_gradient_loss * mask).sum(dim=-1) / token_counts
+        total_loss = seq_losses.mean(dim=-1)
+
+    return total_loss
 
 
 def run_grpo_train_step(
@@ -411,23 +426,6 @@ def run_grpo_train_step(
                 before clipping, and any other statistics you might want to log.
     """
         # This problem only requires standard on-policy GRPO.
-    if baseline != "mean":
-        raise NotImplementedError(
-            "Only baseline='mean' is supported."
-        )
-    if advantage_normalizer != "std":
-        raise NotImplementedError(
-            "Only advantage_normalizer='std' is supported."
-        )
-    if importance_reweighting_method != "none":
-        raise NotImplementedError(
-            "Only on-policy training is supported."
-        )
-    if loss_normalization != "sequence":
-        raise NotImplementedError(
-            "Only sequence normalization is supported."
-        )
-
     rollout_batch_size = len(repeated_prompts)
 
     if rollout_batch_size == 0:
@@ -500,15 +498,22 @@ def run_grpo_train_step(
     entropy_sum = torch.zeros((), dtype=torch.float32, device=device)
     response_token_count = torch.zeros((), dtype=torch.float32, device=device)
     optimizer.zero_grad(set_to_none=True)
+    gradient_loss_metadata: dict[str, torch.Tensor | float] = {}
 
     for idx in range(gradient_accumulation_steps):
         start_idx = idx * micro_batch_size
         end_idx = start_idx + micro_batch_size
 
-        micro_input_ids = input_ids[start_idx: end_idx].to(device)
-        micro_labels = labels[start_idx: end_idx].to(device)
-        micro_response_mask = response_mask[start_idx: end_idx].to(device)
-        micro_advantages = advantages[start_idx: end_idx].to(device)
+        micro_advantages = advantages[start_idx: end_idx]
+        micro_nonzero_mask = (micro_advantages != 0)
+        if not micro_nonzero_mask.any():
+            continue
+
+        micro_input_ids = input_ids[start_idx: end_idx][micro_nonzero_mask].to(device)
+        micro_labels = labels[start_idx: end_idx][micro_nonzero_mask].to(device)
+        micro_response_mask = response_mask[start_idx: end_idx][micro_nonzero_mask].to(device)
+        micro_advantages = micro_advantages[micro_nonzero_mask].to(device)
+
 
         log_probs_output = run_get_response_log_probs(
             model=model,
@@ -535,9 +540,13 @@ def run_grpo_train_step(
             loss_normalization=loss_normalization,
             normalization_constant=normalization_constant
         )
+        if loss_normalization == "sequence":
+            scaled_loss = (
+                micro_batch_loss * sum(micro_nonzero_mask).item() / rollout_batch_size
+            )
+        else:
+            scaled_loss = micro_batch_loss
 
-        importance_reweight = micro_batch_size / rollout_batch_size
-        scaled_loss = micro_batch_loss * importance_reweight
         scaled_loss.backward()
 
         batch_loss += scaled_loss.detach()
@@ -553,9 +562,10 @@ def run_grpo_train_step(
     optimizer.step()
     optimizer.zero_grad(set_to_none=True)
     if (response_token_count == 0).any():
-        raise ValueError("Each sequence must contain at least one response token.")
+        mean_token_entropy = torch.zeros((), dtype=torch.float32, device=device)
+    else:
+        mean_token_entropy = entropy_sum / response_token_count
 
-    mean_token_entropy = entropy_sum / response_token_count
     metadata = {
         **rewards_metadata,
         **advantage_metadata,

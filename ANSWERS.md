@@ -768,3 +768,321 @@ step 200 的实际 rollout 已能稳定完成多步算术并给出简洁的标�
 
 这些例子与定量结果一致：训练后模型不只是更经常生成合法的 `<think>`/`<answer>`
 结构，也更经常完成正确的中间运算并把最终数值单独放入 answer 标签中。
+
+## 5 RL algorithm variants
+
+### 5.1 Dr. GRPO
+
+#### Problem: `think_about_length_normalization` — Think about length normalization
+
+两种方法的核心区别是：**按序列长度归一化让每条回答的总权重近似相同；使用固定
+常数归一化让每个 token 的权重近似相同。**
+
+| 方法 | 优点 | 缺点 | 更适合的场景 |
+|---|---|---|---|
+| 除以每条回答自己的长度 | 长、短回答对 loss 的总贡献接近，不会让长回答仅因 token 更多就主导训练 | 短回答中每个 token 的权重更大，可能偏好短回答并低估必要的长推理 | 回答长度差异很大，而且希望每条回答同等重要，例如开放式对话 |
+| 所有回答除以同一个固定常数 | 不会根据模型采样出的回答长度重新加权，可以保留长推理中每个生成决策的贡献 | 长回答包含更多 token，因此总梯度更大；冗长或重复回答可能主导训练并增加方差 | 长度已由 `max_tokens` 或停止标记控制、且长推理过程有价值的任务，例如 GSM8K |
+
+例如，两条 advantage 相同的回答分别包含 20 和 100 个 token。按各自长度归一化时，
+两条回答的总权重近似相同；使用固定常数时，100-token 回答的总贡献大约是 20-token
+回答的 5 倍。因此，没有一种方法在所有场景下都最好：希望“每条回答权重相同”时使用
+sequence normalization；希望避免隐式偏好短回答、保留长推理贡献时使用固定常数。
+
+#### Problem: `compute_group_normalized_rewards_drgrpo` — Dr. GRPO Group normalization
+
+具体代码见
+[`tests/adapters.py` 中的 `run_compute_group_normalized_rewards`](tests/adapters.py)。
+该实现现在支持 `baseline="mean"` 和 `baseline="none"`，以及
+`advantage_normalizer="std"` 和 `advantage_normalizer="none"`。
+
+- `baseline="mean"` 时，对每个 prompt 的 group 减去组内平均 reward；
+- `baseline="none"` 时，直接保留原始 reward，不减 baseline；
+- `advantage_normalizer="std"` 时，将结果除以组内标准差加
+  `advantage_eps`；
+- `advantage_normalizer="none"` 时，不再进行尺度归一化。
+
+因此，Dr. GRPO 使用的组合
+`baseline="mean", advantage_normalizer="none"` 对应
+
+$$
+A_{i,j}=r_{i,j}-\bar r_i,
+$$
+
+而不是标准 GRPO 的
+
+$$
+A_{i,j}=\frac{r_{i,j}-\bar r_i}{s_i+\epsilon}.
+$$
+
+实现通过以下测试：
+
+```bash
+uv run pytest -k compute_group_normalized_rewards_drgrpo
+```
+
+#### Problem: `aggregate_loss_across_microbatch_constant` — Dr. GRPO loss aggregation
+
+具体代码见
+[`tests/adapters.py` 中的 `run_aggregate_loss_across_microbatch`](tests/adapters.py)。
+当 `loss_normalization="constant"` 时，函数先使用 response mask 排除 prompt、padding
+等不属于 response 的 token，然后将所有有效 token 的 policy-gradient loss 求和，最后
+除以固定的 `normalization_constant`：
+
+$$
+L=\frac{1}{C}\sum_{i,t}m_{i,t}\ell_{i,t},
+$$
+
+其中 $m_{i,t}$ 是 response mask，$C$ 是整个训练过程中保持不变的归一化常数。
+这与 sequence normalization 不同：后者先除以每条 response 自己的有效 token 数，再
+对 batch 中的 sequence 求平均；constant normalization 不会根据本批次生成长度改变
+每个 token 的权重。
+
+实现通过以下测试：
+
+```bash
+uv run pytest -k test_aggregate_loss_across_microbatch_constant
+```
+
+#### Problem: `think_about_rft` — Think about RFT
+
+**更新方式对比**
+
+| 情况 | RFT | Dr. GRPO |
+|---|---|---|
+| 单个正确回答 | 提高其概率 | 获得正 advantage，提高其概率 |
+| 单个错误回答 | 不参与更新 | 获得负 advantage，降低其概率 |
+| 一组回答全错 | 不更新 | 不更新 |
+| 一组回答全对 | 继续学习正确回答 | advantage 全为 0，不更新 |
+
+- RFT 只学习 reward 为 1 的回答，可以看成对正确 rollouts 做 filtered SFT。
+- Dr. GRPO 使用 $r-\bar r$，学习的是同一道题不同回答之间的相对好坏。
+
+**期望**
+
+固定 prompt $x$，记单个 rollout 的期望 policy gradient 为
+
+$$
+g_x=\mathbb E\left[r(Y\mid x)\nabla_\theta\log\pi_\theta(Y\mid x)\mid x\right].
+$$
+
+那么 $G$ 个 rollouts 的 RFT 和 Dr. GRPO 梯度期望分别为
+
+$$
+\mathbb E[\hat g_{\mathrm{RFT}}\mid x]=\frac{G}{Z}g_x.
+$$
+
+$$
+\mathbb E[\hat g_{\mathrm{Dr}}\mid x]=\frac{G-1}{Z}g_x.
+$$
+
+所以二者的期望方向相同，但 Dr. GRPO 因为使用了包含当前样本的 group mean，大小比
+RFT 少一个 $1-1/G$ 的固定系数。这个系数可以由学习率或归一化常数吸收。
+
+**方差**
+
+- Dr. GRPO 减去组内平均 reward，去除了同一 prompt 下的公共 reward 水平，通常具有
+  更低的梯度方差。
+- 例如一组回答全对时，RFT 仍会产生依赖具体采样回答的随机梯度，而 Dr. GRPO 的梯度
+  为 0，因此消除了这部分噪声。
+- 不过 group mean 本身也是随机估计量，所以小 group 下不能保证方差一定更低。
+
+**适用场景**
+
+| 场景 | 更适合的方法 | 原因或限制 |
+|---|---|---|
+| 成功样本可靠，希望保存并重复训练 | RFT | 可过滤出正确 rollouts，作为离线 SFT 数据复用 |
+| 同一道题经常生成有对有错的回答 | Dr. GRPO | 可同时提高正确回答、降低错误回答的概率 |
+| 不同 prompt 的难度差异较大 | Dr. GRPO | 每个 prompt 内单独减均值，减少容易题成功样本对训练的主导 |
+| 只能为每个 prompt 生成一个回答 | RFT | RFT 可使用 $G=1$；Dr. GRPO 在 $G=1$ 时 advantage 恒为 0 |
+| 困难 prompt 的整组回答全部错误 | 两者都不合适 | 两者都没有梯度，需要增大 $G$、改善探索或使用更密集的 reward |
+
+**计算成本。** 题目中的两种方法都生成 $G$ 个 responses，因此使用相同 $G$ 时，
+rollout generation 成本基本相同。RFT 可以过滤并离线复用正确回答；Dr. GRPO 通常
+需要用当前 policy 反复生成新的 on-policy rollouts。
+
+#### Problem: `derive_difficulty_reweightings` — Difficulty reweightings
+
+定义当前 policy 在 prompt $x$ 上的成功概率
+
+$$
+p_\theta(x)=\mathbb E_{y\sim\pi_\theta(\cdot\mid x)}[r(y\mid x)].
+$$
+
+因为 reward 是二元变量，所以当 $G\to\infty$ 时，组内均值和标准差分别收敛到
+
+$$
+\mu\to p_\theta(x),\qquad \operatorname{std}\to\sqrt{p_\theta(x)(1-p_\theta(x))}.
+$$
+
+另外，score-function identity 给出
+
+$$
+\mathbb E_y[\nabla_\theta\log\pi_\theta(y\mid x)]=0.
+$$
+
+因此
+
+$$
+\mathbb E_y[(r-p_\theta(x))\nabla_\theta\log\pi_\theta(y\mid x)]=\nabla_\theta p_\theta(x).
+$$
+
+下面将各算法的极限期望梯度与
+$w(x,\operatorname{stopgrad}(\pi_\theta))\nabla_\theta p_\theta(x)$ 对照；计算梯度时
+只使用 $w$ 的当前数值，不对 $w$ 本身反向传播。
+
+##### （a）Dr. GRPO
+
+设置 $Z=G$ 后，rollout 求和是样本平均。令 $G\to\infty$，其条件期望梯度为
+
+$$
+\mathbb E_y[(r-p_\theta(x))\nabla_\theta\log\pi_\theta(y\mid x)]=\nabla_\theta p_\theta(x).
+$$
+
+因此
+
+$$
+\boxed{w_{\mathrm{Dr.GRPO}}(x)=1}.
+$$
+
+Dr. GRPO 在该极限下不给 prompts 施加额外的难度权重，而是优化原始的平均成功率。
+有限 $G$ 时，包含当前样本的 group mean 会产生 $1-1/G$ 的整体缩放；题目取
+$G\to\infty$ 后该缩放消失。
+
+##### （b）标准 GRPO
+
+标准 GRPO 还将 advantage 除以 reward 的组内标准差。在无限 group 极限下，标准差只
+依赖 prompt $x$，并在当前梯度步骤中视为常数，所以
+
+$$
+\mathbb E_y\left[\frac{r-p_\theta(x)}{\sqrt{p_\theta(x)(1-p_\theta(x))}}\nabla_\theta\log\pi_\theta(y\mid x)\right]=\frac{\nabla_\theta p_\theta(x)}{\sqrt{p_\theta(x)(1-p_\theta(x))}}.
+$$
+
+因此
+
+$$
+\boxed{w_{\mathrm{GRPO}}(x)=\frac{1}{\sqrt{p_\theta(x)(1-p_\theta(x))}}}.
+$$
+
+该权重在 $p_\theta(x)=0.5$ 附近最小，并在正确率接近 0 或 1 时增大；因此它相对于
+中等难度 prompts，会提高极难和极易 prompts 的形式权重。实际实现需要在分母加入
+$\epsilon$，避免 $p_\theta(x)=0$ 或 1 时除零。
+
+##### （c）MaxRL
+
+MaxRL 将 centered reward 除以组内平均 reward。当 $G\to\infty$ 时，
+$\mu\to p_\theta(x)$，因此
+
+$$
+\mathbb E_y\left[\frac{r-p_\theta(x)}{p_\theta(x)}\nabla_\theta\log\pi_\theta(y\mid x)\right]=\frac{\nabla_\theta p_\theta(x)}{p_\theta(x)}.
+$$
+
+所以
+
+$$
+\boxed{w_{\mathrm{MaxRL}}(x)=\frac{1}{p_\theta(x)}}.
+$$
+
+prompt 的成功概率越低，权重越大，因此 MaxRL 明确地将更多更新权重放在困难 prompts
+上。与标准 GRPO 相同，实际实现需要用 $\epsilon$ 或其他裁剪方式处理
+$p_\theta(x)\approx0$ 的情况。
+
+| 方法 | 难度重加权 $w(x)$ | 对 prompts 的影响 |
+|---|---:|---|
+| Dr. GRPO | $1$ | 不额外按照当前难度重加权 |
+| 标准 GRPO | $1/\sqrt{p_\theta(x)(1-p_\theta(x))}$ | 相对提高正确率接近 0 或 1 的 prompts 权重 |
+| MaxRL | $1/p_\theta(x)$ | 成功率越低、难度越高，权重越大 |
+
+#### Problem: `think_about_advantage_normalization` — Advantage normalization
+
+令 $p=p_\theta(x)$ 表示当前 policy 在 prompt $x$ 上的正确率。对于二元 reward，
+三种方法在 $G\to\infty$ 时分别对应以下难度权重：
+
+| Advantage | 隐式权重 $w(x)$ | 优点 | 缺点与风险 | 更适合的场景 |
+|---|---:|---|---|---|
+| 不做归一化：$r-\mu$ | $1$ | 不额外改变 prompt 难度分布；直接优化平均正确率；数值相对稳定 | 不会特别关注困难题；不同 prompt 的 advantage 尺度可能差异较大 | 希望忠实优化原始 prompt 分布，或 group 较小、归一化统计量不可靠时 |
+| 除以 group std | $1/\sqrt{p(1-p)}$ | 统一不同 group 的 advantage 尺度，可减少某些 group 仅因尺度较大而主导更新 | 当 std 很小时会放大估计噪声；隐式提高极难和极易题的形式权重；必须加入 $\epsilon$ | group 足够大、std 估计可靠，并希望平衡不同 group 的更新尺度时 |
+| 除以 group mean | $1/p$ | 明确提高困难 prompt 的相对权重，鼓励提升低成功率题目 | $p$ 很小时权重和方差可能很大；会偏离原始平均正确率目标；必须加入 $\epsilon$ 或裁剪 | 困难题仍有一定成功样本、且训练目标希望重点改善困难题时 |
+
+例如，假设三道题的当前正确率分别为 $p=0.01,0.5,0.99$，对应的隐式权重大约为：
+
+| 正确率 $p$ | 不归一化 | 除以 std | 除以 mean |
+|---:|---:|---:|---:|
+| $0.01$ | $1$ | $10.05$ | $100$ |
+| $0.50$ | $1$ | $2$ | $2$ |
+| $0.99$ | $1$ | $10.05$ | $1.01$ |
+
+因此，不归一化不会显式改变 prompt 权重；std normalization 相对于中等难度题，
+形式上同时放大极难和极易题；mean normalization 则强烈偏向当前成功率低的困难题。
+不过，权重只是乘在 $\nabla_\theta p_\theta(x)$ 前面的系数，不代表最终梯度必然更大。
+特别是当一组 responses 全对或全错时，centered advantages 均为 0，三种方法都不会从
+该 group 获得更新；对 std 或 mean 做除法时还必须使用 $\epsilon$ 防止除零。
+
+#### Problem: `compute_group_normalized_rewards_maxrl` — MaxRL Group normalization
+
+具体代码见
+[`tests/adapters.py` 中的 `run_compute_group_normalized_rewards`](tests/adapters.py)。
+实现先把 rewards reshape 为 `(n_prompts, group_size)`，使每一行对应同一个 prompt 的
+responses。对于 MaxRL 使用的
+`baseline="mean", advantage_normalizer="mean"`，先计算每组的平均 reward
+$\bar r_i$，再得到
+
+$$
+A_{i,j}=\frac{r_{i,j}-\bar r_i}{\bar r_i+\epsilon}.
+$$
+
+其中，分子减去 group mean 形成 centered advantage，分母中的
+`advantage_eps` 避免整组 reward 均为 0 时除零。计算完成后，再将 advantages reshape
+回与输入相同的一维形状。该实现同时保留了 `"std"` 和 `"none"` normalizers 的行为。
+
+实现通过题目指定的测试：
+
+```bash
+uv run pytest -k compute_group_normalized_rewards_maxrl
+```
+
+测试结果为 `1 passed, 25 deselected`；进一步同时运行 GRPO、Dr. GRPO 和 MaxRL 的三项
+group-normalization 测试，结果为 `3 passed, 23 deselected`。
+
+#### Problem: `grpo_train_step_variants_on_policy` — GRPO train step variants
+
+具体代码见 [`tests/adapters.py` 中的 `run_grpo_train_step`](tests/adapters.py)。该实现将
+`baseline`、`advantage_normalizer` 和 `loss_normalization` 传给底层计算函数，因此支持
+以下 on-policy variants：
+
+| Variant | `baseline` | `advantage_normalizer` |
+|---|---|---|
+| 标准 GRPO | `"mean"` | `"std"` |
+| Dr. GRPO | `"mean"` | `"none"` |
+| RFT | `"none"` | `"none"` |
+| MaxRL | `"mean"` | `"mean"` |
+
+四种方法均支持 `loss_normalization="sequence"` 和 `"constant"`，并保持
+`importance_reweighting_method="none"`，即本题要求的 on-policy 设置。
+
+**Zero-advantage filtering。** 函数先在完整 rollout batch 上计算 group statistics 和
+advantages，再在每个 microbatch 内构造 `micro_nonzero_mask`。假设原 microbatch 大小
+为 $M$、过滤后保留 $K$ 条 sequence、padding 后长度为 $T$，则张量 shape 从
+`(M, T)` 变为 `(K, T)`，advantages 从 `(M,)` 变为 `(K,)`。只有过滤后的
+`input_ids`、`labels` 和 `response_mask` 会进入模型，因此 advantage 为 0 的错误 RFT
+样本不会消耗模型 forward 和 backward。若整个 microbatch 都为 0，则直接跳过；若整个
+rollout batch 都为 0，则安全返回 zero loss 和 zero gradient。
+
+过滤后仍保持原始 loss 的归一化：对于 sequence normalization，microbatch loss 是
+$K$ 条保留 sequence 的平均，因此乘以 $K/B$，其中 $B$ 是过滤前的
+`rollout_batch_size`；对于 constant normalization，每个 microbatch 已经将 token loss
+之和除以同一个固定常数 $Z$，所以不同 microbatches 的梯度直接累加，不再乘 batch-size
+比例：
+
+$$
+L_b^{\mathrm{sequence}}=\frac{K}{B}L_{b,\mathrm{filtered}},\qquad L_b^{\mathrm{constant}}=\frac{1}{Z}\sum_{i\in b,t}\ell_{i,t}.
+$$
+
+实现通过题目指定的测试：
+
+```bash
+uv run pytest -k test_grpo_train_step_variants_on_policy
+```
+
+四个 variants 均通过；连同标准 on-policy、group normalization 和 loss aggregation
+回归测试共 `10 passed, 16 deselected`。另外，全零 advantage batch 的边界测试返回
+`loss=0`、`gradient_norm=0` 和 `token_entropy=0`。
