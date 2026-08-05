@@ -23,6 +23,10 @@ class GRPOConfig:
     rollout_batch_size: int
     group_size: int
     gradient_accumulation_steps: int
+    baseline: str
+    advantage_normalizer: str
+    loss_normalization: str
+    variant_name: str
 
     learning_rate: float
     max_grad_norm: float
@@ -51,6 +55,25 @@ def parse_args() -> GRPOConfig:
     parser.add_argument("--rollout-batch-size", type=int, required=True)
     parser.add_argument("--group-size", type=int, required=True)
     parser.add_argument("--gradient-accumulation-steps", type=int, required=True)
+    parser.add_argument(
+        "--baseline",
+        choices=["mean", "none"],
+        type=str,
+        default="mean"
+    )
+    parser.add_argument(
+        "--advantage-normalizer",
+        choices=["std", "none", "mean"],
+        type=str,
+        default="std"
+    )
+    parser.add_argument(
+        "--loss-normalization",
+        choices=["sequence", "constant"],
+        type=str,
+        default="sequence"
+    )
+    parser.add_argument("--variant-name", type=str, default="standard")
     parser.add_argument("--learning-rate", type=float, required=True)
     parser.add_argument("--max-grad-norm", type=float, required=True)
     parser.add_argument("--temperature", type=float, required=True)
@@ -73,6 +96,10 @@ def parse_args() -> GRPOConfig:
         rollout_batch_size=args.rollout_batch_size,
         group_size=args.group_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
+        baseline=args.baseline,
+        advantage_normalizer=args.advantage_normalizer,
+        loss_normalization=args.loss_normalization,
+        variant_name=args.variant_name,
         learning_rate=args.learning_rate,
         max_grad_norm=args.max_grad_norm,
         temperature=args.temperature,
@@ -239,8 +266,8 @@ def train_grpo(config: GRPOConfig):
 
     wandb_run = wandb.init(
         project="cs336-assignment5-grpo",
-        name=f"grpo-r1-zero-seed-{config.seed}",
-        group="grpo-r1-zero-standard",
+        name=f"{config.variant_name}-seed-{config.seed}",
+        group=f"grpo-r1-zero-{config.variant_name}",
         config=wandb_config,
     )
     rollout_log_path = (
@@ -331,6 +358,10 @@ def train_grpo(config: GRPOConfig):
         repeated_ground_truths = [ground_truth for ground_truth in ground_truths for _ in range(config.group_size)]
 
         ## 5. train loop
+        normalization_constant = None
+        if config.loss_normalization == "constant":
+            normalization_constant = config.rollout_batch_size * config.max_tokens
+
         loss, metadata = run_grpo_train_step(
             model=policy,
             tokenizer=tokenizer,
@@ -339,6 +370,10 @@ def train_grpo(config: GRPOConfig):
             max_grad_norm=config.max_grad_norm,
             reward_fn=r1_zero_reward_fn,
             repeated_prompts=repeated_prompts,
+            baseline=config.baseline,
+            advantage_normalizer=config.advantage_normalizer,
+            loss_normalization=config.loss_normalization,
+            normalization_constant=normalization_constant,
             rollout_responses=rollout_responses,
             repeated_ground_truths=repeated_ground_truths,
             group_size=config.group_size
