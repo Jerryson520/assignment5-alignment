@@ -287,10 +287,46 @@ def run_compute_policy_gradient_loss(
                 clip-fraction components.
     """
     advantages = raw_rewards_or_advantages.reshape(-1, 1)
-    per_token_loss = -(
-        advantages * policy_log_probs
-    )
     metadata = {}
+
+    if importance_reweighting_method == "none":
+        per_token_loss = -(advantages * policy_log_probs)
+
+    elif importance_reweighting_method == "noclip":
+        importance_weights = torch.exp(policy_log_probs - old_log_probs)
+        per_token_loss = -(advantages * importance_weights)
+
+    elif importance_reweighting_method == "grpo":
+        importance_weights = torch.exp(policy_log_probs - old_log_probs)
+        clipped_weights = torch.clamp(
+            importance_weights,
+            min=1-cliprange,
+            max=1+cliprange,
+        )
+
+        per_token_loss = -torch.minimum(
+            advantages * importance_weights,
+            advantages * clipped_weights,
+        )
+    elif importance_reweighting_method == "gspo":
+        log_ratios = policy_log_probs - old_log_probs
+        mask = response_mask.to(log_ratios.dtype)
+        response_lengths = mask.sum(dim=-1, keepdim=True)
+
+        log_weights = (log_ratios * mask).sum(dim=-1, keepdim=True) / response_lengths
+        importance_weights = torch.exp(log_weights)
+
+        clipped_weights = torch.clamp(
+            importance_weights,
+            min=1-cliprange,
+            max=1+cliprange,
+        )
+
+        per_token_loss = -torch.minimum(
+            advantages * importance_weights,
+            advantages * clipped_weights,
+        ).expand_as(policy_log_probs)
+
     return per_token_loss, metadata
 
 
@@ -513,7 +549,6 @@ def run_grpo_train_step(
         micro_labels = labels[start_idx: end_idx][micro_nonzero_mask].to(device)
         micro_response_mask = response_mask[start_idx: end_idx][micro_nonzero_mask].to(device)
         micro_advantages = micro_advantages[micro_nonzero_mask].to(device)
-
 
         log_probs_output = run_get_response_log_probs(
             model=model,

@@ -1086,3 +1086,388 @@ uv run pytest -k test_grpo_train_step_variants_on_policy
 四个 variants 均通过；连同标准 on-policy、group normalization 和 loss aggregation
 回归测试共 `10 passed, 16 deselected`。另外，全零 advantage batch 的边界测试返回
 `loss=0`、`gradient_norm=0` 和 `token_entropy=0`。
+
+### 5.4 Experiments
+
+#### Problem: `grpo_experiments_variants_on_policy` — Compare on-policy RL algorithms
+
+我使用与标准 GRPO 实验相同的模型、`r1_zero` prompt、数据、学习率
+$10^{-5}$、rollout batch size 256、group size 8、200 个 rollout steps 和验证设置。
+每种方法均运行 seed 0、1、2、3。除标准 GRPO 使用 sequence normalization 外，四个
+新变体均使用题目规定的 constant normalization。原始运行记录见
+[W&B workspace](https://wandb.ai/jerry520/cs336-assignment5-grpo/workspace?nw=nwuserjerry520)。
+
+下图左侧画出了每个 seed 的 validation reward（浅色线）、四 seed 均值（粗实线）和
+逐 step 的 min--max 范围（阴影）；右侧显示最终 validation reward 的四个 seed、均值
+以及样本标准差。
+
+![On-policy GRPO variant comparison](results/grpo_on_policy_variants.png)
+
+最终结果如下。括号中的标准差均为四个 seed 之间的样本标准差。
+
+| Method | Seed 0 | Seed 1 | Seed 2 | Seed 3 | Mean | Sample SD |
+|---|---:|---:|---:|---:|---:|---:|
+| Standard GRPO | 0.4570 | 0.4658 | 0.4629 | 0.4639 | **0.4624** | **0.0038** |
+| GRPO_constant | 0.0850 | 0.4434 | 0.4717 | 0.4395 | 0.3599 | 0.1838 |
+| Dr_GRPO | 0.0908 | 0.0869 | 0.4814 | 0.4541 | 0.2783 | 0.2191 |
+| RFT | 0.3721 | 0.0713 | 0.4092 | 0.3818 | 0.3086 | 0.1590 |
+| MaxRL | 0.4326 | 0.4258 | 0.4473 | 0.4297 | **0.4338** | **0.0094** |
+
+**平均性能。** 在本次固定超参数比较中，standard GRPO 的平均 final validation reward
+最高，为 0.4624。MaxRL 以 0.4338 排在第二，也是四个新变体中表现最好的方法，比
+standard GRPO 低约 2.86 个百分点。GRPO_constant、RFT 和 Dr_GRPO 的平均值依次为
+0.3599、0.3086 和 0.2783，但这些均值受到少数失败 seed 的明显影响。
+
+**方差和训练稳定性。** Standard GRPO 的样本标准差只有 0.0038，是所有方法中最稳定
+的；四个 seed 的最终结果都集中在 0.4570--0.4658。新变体中 MaxRL 的方差最低，样本
+标准差为 0.0094，四个 seed 都成功学习。相比之下，GRPO_constant 有 1 个失败 seed，
+Dr_GRPO 有 2 个失败 seed，RFT 有 1 个失败 seed，因此样本标准差分别达到 0.1838、
+0.2191 和 0.1590。
+
+**短输出坍缩。** 失败并不是简单的格式学习失败。W&B 中这些 run 的最终 format reward
+仍然很高，但平均 response length 坍缩到了很短的范围：GRPO_constant seed 0 为
+15.25 tokens，Dr_GRPO seed 0/1 分别为 22.53 和 13.41 tokens，RFT seed 1 为
+13.31 tokens。模型往往输出类似
+`90 </think> <answer> 80 </answer>` 的极短响应：格式合法，但 `<think>` 中几乎没有
+推理，最终 reward 仅约 0.07--0.09。与之相对，正常 runs 最终平均 response length
+通常约为 120--156 tokens。
+
+每 40 steps 保存的 rollout 证实了这一现象，但 validation history 表明坍缩实际发生在
+第一次 rollout table 之前。例如，GRPO_constant seed 0 的 validation response length
+在 step 10、20、30、40 分别为 79.6、28.5、15.3、14.1，而 format reward 同期从
+0.531 上升至 0.991，validation reward 到 step 40 仍只有 0.050。Dr_GRPO seed 0 的长度
+从 87.6 降至 35.8、17.0；RFT seed 1 则从 53.4 降至 15.2、14.3。因此，run 的命运主要
+在最初约 20--30 steps 决定。
+
+rollout tables 中的长度差异也非常明显：在 step 40，坍缩与正常 seed 的平均词数分别为
+GRPO_constant 4.9 vs. 68.5、Dr_GRPO 6.6 vs. 93.1、RFT 5.5 vs. 86.7。由此可以排除
+response-length 统计错误或单纯验证集波动。
+
+**坍缩机制。** 这批数据更支持“有效更新过弱并由稀疏奖励触发”的解释，而不是梯度
+爆炸。训练初期二元正确性 reward 极其稀疏；例如 GRPO_constant 的坍缩 seed 在
+step 10 的 train reward 为 0.008，约等于 256 个 responses 中只有 2 个正确，而
+Dr_GRPO 坍缩 seed 只有约 1 个正确。对于 mean-baseline 方法，如果一个 group 的 8 个
+responses 全错，则整组 advantages 都为 0 并被训练代码跳过；RFT 也只训练 reward 为 1
+的 responses。因此，最初少量随机成功样本会强烈影响后续方向，并产生 on-policy
+自强化。
+
+此外，constant normalization 使用
+
+$$
+Z=\text{rollout batch size}\times\text{max tokens}=256\times512=131072.
+$$
+
+一条长度为 $L$ 的 response 相对于 512-token 上限的有效尺度约为 $L/512$。当输出缩短
+到约 13 tokens 时，该比例只有约 0.025；输出越短，更新信号越弱，模型越难离开已经形成
+的短输出模式。W&B 的 gradient norm 与此一致：坍缩的 GRPO_constant 多在
+0.02--0.07，Dr_GRPO 多在 0.004--0.04，RFT 多在 0.007--0.025；standard GRPO 则常在
+0.3--1.3。因而这里没有观察到梯度爆炸，反而是长期过小的有效梯度。
+
+对于 GRPO_constant 和 Dr_GRPO，mixed-reward group 中的长错误 response 还会累积更多
+负-advantage token，而短错误 response 的负贡献较少；constant normalization 因此可能
+间接产生缩短错误回答的压力。RFT 没有负 advantage，但只模仿极少数正确 samples；如果
+早期偶然成功的 samples 较短，也可能强化短回答风格。`</answer>` stop condition 会让已经
+学会快速闭合标签的模式立即停止生成，从而放大可见的超短现象，但正常 seeds 使用相同
+stop condition 仍能生成完整推理，所以它不是根因。另需注意，`format_reward` 只用于
+logging，并未加入训练 reward；因此这不是直接优化 format reward 造成的 reward hacking。
+
+MaxRL 的稳定性也支持上述解释。当一个 8-response group 只有一个正确答案时，group
+mean 为 $1/8$，mean normalization 会将 centered advantage 放大约 8 倍，部分抵消早期
+奖励稀疏和 constant normalization 带来的小梯度。因此四个 MaxRL seeds 都成功启动，
+而取消这种尺度补偿的 Dr_GRPO 和 RFT 更依赖最初的随机成功样本。
+
+**是否需要单独调参。** GRPO_constant、Dr_GRPO 和 RFT 最值得进一步调参。沿用为
+standard GRPO 选定的 $10^{-5}$ 学习率并不保证比较完全公平，但实际 gradient norm
+表明不应首先假设学习率过大。更合理的下一步是针对有效更新尺度做小规模 sweep，例如
+尝试适当增大学习率、减小 `normalization_constant`，或加入 learning-rate warmup，
+同时密切观察 gradient norm。训练前 40 steps 还应每 5--10 steps 记录 response length、
+非零-advantage response 数、mixed-reward group 数和 advantage 分布，以便在
+`length < 30`、`reward < 0.1` 且 `format_reward > 0.9` 时提前识别并停止坍缩 run。
+
+成功 seeds 说明这些方法仍有调优潜力：GRPO_constant seed 2 达到 0.4717，Dr_GRPO
+seed 2 达到 0.4814，均超过 standard GRPO 的四-seed 均值。RFT 也有三个 seeds 达到
+0.3721--0.4092，但整体仍低于 standard GRPO，可能需要改善早期正确样本数量或有效更新
+尺度。MaxRL 在当前配置下已经较稳定，单独调参可能缩小它与 standard GRPO 的差距，
+但现有结果没有显示它更优。
+
+**结论可信度。** 对“在当前共享超参数下，standard GRPO 优于 MaxRL，且两者都比较
+稳定”这一结论，我有较高信心：两种方法的 seed 方差都很小，并且 standard GRPO 的
+最差 seed 仍高于 MaxRL 的最好 seed。对 GRPO_constant、Dr_GRPO 和 RFT 之间的精确
+排名，我的信心较低，因为每种方法只有四个 seeds，而且均值被一两个坍缩 run 主导。
+因此，本实验足以说明它们在当前配置下稳定性较差，但不足以断言这些算法在分别调优后
+仍然一定弱于 standard GRPO。
+
+## 6 Off-policy RL
+
+### 6.2 PPO/GRPO-style importance reweighting and clipping
+
+#### Problem: `derive_surrogate_objectives` — Pairwise importance reweighting
+
+假设响应长度 $L$ 为偶数。对第 $t$ 对 token $(2t-1,2t)$，定义一个代理策略
+$\widetilde\pi_t^{\mathrm{pair}}$：仅在位置 $2t-1$ 和 $2t$ 使用当前策略
+$\pi_\theta$，其余位置仍使用旧的采样策略 $\pi_0$。因此
+
+$$
+\begin{aligned}
+\widetilde\pi_t^{\mathrm{pair}}(y\mid x)
+={}&
+\left(
+\prod_{k=1}^{2t-2}
+\pi_0(y_k\mid x,y_{<k})
+\right)
+\pi_\theta(y_{2t-1}\mid x,y_{<2t-1})
+\pi_\theta(y_{2t}\mid x,y_{<2t})\\
+&\quad\cdot
+\left(
+\prod_{k=2t+1}^{L}
+\pi_0(y_k\mid x,y_{<k})
+\right).
+\end{aligned}
+$$
+
+对应的 surrogate objective 为
+
+$$
+\boxed{
+J_\theta^{\mathrm{pair}}
+=
+\mathbb E_{x\sim\rho}
+\left[
+\sum_{t=1}^{L/2}
+\mathbb E_{y\sim
+\widetilde\pi_t^{\mathrm{pair}}(\cdot\mid x)}
+\bigl[r(y\mid x)\bigr]
+\right].
+}
+$$
+
+下面证明它的梯度就是题目中的 estimator。由于完整的旧策略分布为
+
+$$
+\pi_0(y\mid x)
+=
+\prod_{k=1}^{L}\pi_0(y_k\mid x,y_{<k}),
+$$
+
+代理策略与旧策略的密度比中，其余位置的因子全部抵消，得到
+
+$$
+\frac{\widetilde\pi_t^{\mathrm{pair}}(y\mid x)}
+{\pi_0(y\mid x)}
+=
+R_t(y,x)
+=
+\frac{
+\pi_\theta(y_{2t-1}\mid x,y_{<2t-1})
+\pi_\theta(y_{2t}\mid x,y_{<2t})
+}{
+\pi_0(y_{2t-1}\mid x,y_{<2t-1})
+\pi_0(y_{2t}\mid x,y_{<2t})
+}.
+$$
+
+因此，可以将代理目标中的期望改写为在 $y\sim\pi_0(\cdot\mid x)$ 下的期望：
+
+$$
+J_\theta^{\mathrm{pair}}
+=
+\mathbb E_{x\sim\rho}
+\mathbb E_{y\sim\pi_0(\cdot\mid x)}
+\left[
+\sum_{t=1}^{L/2}R_t(y,x)r(y\mid x)
+\right].
+$$
+
+$\pi_0$ 是固定的旧策略，reward 也不对 $\theta$ 求导，所以
+
+$$
+\nabla_\theta J_\theta^{\mathrm{pair}}
+=
+\mathbb E_{x\sim\rho}
+\mathbb E_{y\sim\pi_0(\cdot\mid x)}
+\left[
+\sum_{t=1}^{L/2}
+r(y\mid x)\nabla_\theta R_t(y,x)
+\right].
+$$
+
+再使用 log-derivative identity
+$\nabla_\theta R_t=R_t\nabla_\theta\log R_t$。由于 $R_t$ 的分母只包含
+固定的 $\pi_0$，因此
+
+$$
+\nabla_\theta\log R_t
+=
+\nabla_\theta\log\left(
+\pi_\theta(y_{2t-1}\mid x,y_{<2t-1})
+\pi_\theta(y_{2t}\mid x,y_{<2t})
+\right).
+$$
+
+代回可得
+
+$$
+\boxed{
+\begin{aligned}
+\nabla_\theta J_\theta^{\mathrm{pair}}
+=
+\mathbb E_{x\sim\rho}
+\mathbb E_{y\sim\pi_0(\cdot\mid x)}
+\Bigg[
+\sum_{t=1}^{L/2}
+&\frac{
+\pi_\theta(y_{2t-1}\mid x,y_{<2t-1})
+\pi_\theta(y_{2t}\mid x,y_{<2t})
+}{
+\pi_0(y_{2t-1}\mid x,y_{<2t-1})
+\pi_0(y_{2t}\mid x,y_{<2t})
+}\\
+&\cdot r(y\mid x)
+\nabla_\theta\log\left(
+\pi_\theta(y_{2t-1}\mid x,y_{<2t-1})
+\pi_\theta(y_{2t}\mid x,y_{<2t})
+\right)
+\Bigg].
+\end{aligned}
+}
+$$
+
+这正是公式 (55) 在 $x\sim\rho$、$y\sim\pi_0(\cdot\mid x)$ 下的期望，
+所以公式 (55) 是上述 pairwise surrogate objective 的梯度。对于第 $t$ 项，
+代理策略只在位置 $(2t-1,2t)$ 使用当前策略 $\pi_\theta$，其余 token 仍由旧策略
+$\pi_0$ 生成。因此，当 $\pi_\theta\neq\pi_0$ 时，该目标一般不同于完整当前策略的
+期望奖励
+
+$$
+\mathbb E_{y\sim\pi_\theta(\cdot\mid x)}[r(y\mid x)].
+$$
+
+与无偏的 sequence-level importance sampling 相比，pairwise 方法每次只将两个
+token 的 importance ratios 相乘，避免了 importance weight 的方差随序列长度指数
+增长，但代价是引入了偏差。当 $\pi_\theta$ 与 $\pi_0$ 非常接近时，这种偏差较小；
+特别地，当 $\pi_\theta=\pi_0$ 且每个 token 恰好属于一个 pair 时，各 pair 的梯度
+相加后等于标准的 on-policy policy gradient。
+
+#### Problem: `compute_policy_gradient_loss_off_policy` — Token-level importance reweighting
+
+我扩展了 `compute_policy_gradient_loss`，使其支持 `noclip` 和 `grpo` 两种
+token-level importance reweighting。对每条 response 的第 $t$ 个 token，先计算
+
+$$
+w_t
+=
+\exp\left(
+\log\pi_\theta(y_t\mid x,y_{<t})
+-
+\log\pi_0(y_t\mid x,y_{<t})
+\right).
+$$
+
+`noclip` 返回的 per-token loss 为
+
+$$
+\ell_t^{\mathrm{noclip}}=-A w_t,
+$$
+
+而 `grpo` 返回 PPO/GRPO-style clipped loss
+
+$$
+\ell_t^{\mathrm{grpo}}
+=
+-\min\left(
+A w_t,
+A\operatorname{clip}(w_t,1-\varepsilon,1+\varepsilon)
+\right).
+$$
+
+两种方法都保留 $(\text{response batch size},\text{sequence length})$ 的输出 shape；
+response mask、token 求和和 sequence-length normalization 仍由后续 aggregation
+函数处理。实现通过题目指定的测试：
+
+```bash
+uv run pytest -k test_compute_policy_gradient_loss_off_policy
+```
+
+### 6.3 GSPO
+
+#### Problem: `think_about_importance_reweighting` — Bias and variance trade-off
+
+三种方法的主要区别如下。这里的排序是通常情况下的定性判断；clipping 强度、
+新旧策略距离和 response length 都可能改变实际结果，尤其是 token-level GRPO 与
+GSPO 之间不存在对所有问题都成立的严格方差排序。
+
+| 方法 | 偏差 | 方差 | 主要原因 |
+|---|---|---|---|
+| 不做 importance reweighting | 通常最高 | 通常最低 | 直接把 $\pi_0$ 生成的 samples 当作来自 $\pi_\theta$，完全不修正 distribution mismatch |
+| PPO/GRPO clipped token-level | 中等 | 较低到中等 | $w_t$ 修正当前 token，但忽略 prefix/suffix reweighting；token-level clipping 进一步用偏差换取稳定性 |
+| GSPO clipped sequence-level | 通常更能反映整条 response 的变化，但仍有偏 | 中等，且远低于完整 sequence-level IS | 整条 response 共享几何平均 ratio，保留 sequence-level 一致性；$L$ 次方根和 clipping 都会引入偏差并抑制方差 |
+
+若把未裁剪的完整 sequence-level importance sampling 作为“低偏差、高方差”的参考
+端点，一个粗略直觉是
+
+$$
+\text{不重加权}
+\;\longrightarrow\;
+\text{clipped token-level GRPO}
+\;\longrightarrow\;
+\text{clipped GSPO}
+\;\longrightarrow\;
+\text{完整 sequence-level IS},
+$$
+
+从左到右通常使用了更多 distribution-ratio 信息，同时承担更大的 estimator 波动。
+不过中间两项的偏差与方差来自不同机制，实际次序并不是普遍定理。
+
+如果 rollouts 很新、$\pi_\theta\approx\pi_0$，或者每批 samples 只进行很少的更新，
+不做 reweighting 的 distribution mismatch 很小，此时它最简单且方差最低。若同一批
+rollouts 会被复用若干次、但希望限制单个 token ratio 的异常波动，clipped token-level
+GRPO 通常是稳健的折中；它尤其适合长 responses，因为不会形成完整 sequence ratios
+的连乘。若 reward 明确评价整条 response（例如最终数学答案是否正确），并且希望同一
+response 的所有 token 使用一致的 weight 和 clipping decision，GSPO 更自然。它使用
+平均 per-token log-ratio 的指数，避免完整 sequence-level importance weight 随长度
+指数爆炸，但并不能恢复严格无偏的 importance sampling。若 $\pi_0$ 与 $\pi_\theta$
+相差很大，三种近似都可能不可靠，此时更合理的做法通常是刷新 rollouts 或减少每批
+rollouts 上的更新次数。
+
+#### Problem: `compute_policy_gradient_loss_off_policy_gspo` — GSPO loss
+
+我进一步实现了 `importance_reweighting_method="gspo"`。首先仅在有效 response
+tokens 上计算平均 log-ratio：
+
+$$
+\log s
+=
+\frac{
+\sum_{t=1}^{T}m_t
+\left[
+\log\pi_\theta(y_t\mid x,y_{<t})
+-
+\log\pi_0(y_t\mid x,y_{<t})
+\right]
+}{
+\sum_{t=1}^{T}m_t
+},
+\qquad
+s=\exp(\log s),
+$$
+
+其中 $m_t$ 是 response mask。该 log-space 写法等价于有效 token importance
+ratios 的几何平均，但避免先 `exp` 再连乘造成的上溢或下溢。每条 response 使用
+sequence-level loss
+
+$$
+\ell^{\mathrm{GSPO}}
+=
+-\min\left(
+As,
+A\operatorname{clip}(s,1-\varepsilon,1+\varepsilon)
+\right).
+$$
+
+由于接口要求返回 per-token tensor，该 sequence loss 被扩展到该 response 的所有
+token；后续 sequence averaging 会抵消复制次数，而 autograd 仍通过 $s$ 将梯度传回
+所有有效 token。实现通过题目指定测试：
+
+```bash
+uv run pytest -k test_compute_policy_gradient_loss_off_policy_gspo
+```
